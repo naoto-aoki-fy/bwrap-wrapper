@@ -1,0 +1,65 @@
+# codex-bwrap-shim
+
+A Python wrapper for bubblewrap that adjusts Codex sandbox arguments, logs each
+invocation, and then replaces itself with the real `bwrap` process. Other
+invocations are logged and forwarded with their arguments unchanged.
+
+## Installation
+
+Requires Python 3.9 or newer and bubblewrap (normally `/usr/bin/bwrap`).
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+PATH="$PWD/.venv/bin:$PATH" codex
+```
+
+The package installs a `bwrap` command. Putting the virtual environment's `bin`
+directory first in `PATH` lets Codex find the shim. Keep `BWRAP_REAL` pointed at
+the actual bubblewrap executable to avoid recursion.
+
+You can also invoke the script directly:
+
+```sh
+python3 bwrap_shim.py --ro-bind / / -- /bin/true
+```
+
+## Codex argument changes
+
+The shim recognizes Codex when arguments before `--` include
+`--argv0 codex-linux-sandbox` and the command immediately after `--` is a path
+containing `/` whose basename is `codex`.
+
+For these invocations, it:
+
+- Converts `--dev /dev` to `--dev-bind /dev /dev`.
+- Reads `--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH`, normalizes the
+  path, and requires it to be absolute when nonempty.
+- Removes `--ro-bind PATH/.git PATH/.git` for that workspace.
+- Before the first `--bind PATH PATH` for the workspace, inserts a tmpfs over
+  `$HOME`, creates `$HOME/.codex`, mounts `$HOME/.codex/packages` read-only, and
+  mounts `$HOME/.codex/memories` writable. The workspace bind is retained.
+
+The home mounts require the corresponding source directories to exist. Without
+a workspace path, the `.git` removal and home mount insertion do not occur.
+These changes expose the host's `/dev`, remove the workspace `.git` read-only
+overlay, and permit writes to Codex memories.
+
+## Configuration and logging
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BWRAP_REAL` | `/usr/bin/bwrap` | Real bubblewrap executable |
+| `BWRAP_LOG` | `$HOME/.local/state/bwrap-wrapper.log` | Append-only invocation log |
+| `HOME` | Required from the environment | Home mount paths and default log location |
+
+The shim creates the log's parent directories and sets a restrictive `0077`
+umask. Each entry records the timestamp, user, PID, Codex detection, workspace
+path, original and modified arguments, and the entire environment. Logs can
+contain credentials and other sensitive values; protect them and redact them
+before sharing. Existing log-file permissions are not changed, and logs are not
+rotated automatically.
+
+The real bubblewrap executable receives the arguments through `os.execv`, so
+its exit status becomes the command's exit status. A logging or configuration
+error prevents bubblewrap from being launched.
