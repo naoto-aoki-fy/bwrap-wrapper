@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-bwrap-shim"
+version = "0.1.0"
+description = "A bubblewrap shim for Codex sandbox invocations"
+requires-python = ">=3.9"
+
+[project.scripts]
+bwrap = "bwrap_shim:main"
+
+[tool.setuptools]
+py-modules = ["bwrap_shim"]
