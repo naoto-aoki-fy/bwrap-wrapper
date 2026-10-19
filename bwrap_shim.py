@@ -16,6 +16,7 @@ def main() -> None:
     os.umask(0o077)
 
     home = os.environ["HOME"]
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
 
     real_bwrap = os.environ.get("BWRAP_REAL", "/usr/bin/bwrap")
     log_file = os.environ.get(
@@ -78,6 +79,10 @@ def main() -> None:
     while is_codex and i < len(original_args):
         arg = original_args[i]
 
+        if arg == "--":
+            args.extend(original_args[i:])
+            break
+
         # Remove the read-only bind mount for sandbox_cwd/.git.
         if arg == "--ro-bind" and i + 2 < len(original_args) and sandbox_cwd is not None:
             git_path = os.path.join(sandbox_cwd, ".git")
@@ -126,6 +131,15 @@ def main() -> None:
                     tmpfs_inserted = True
 
             args.extend(["--bind", src, dst])
+            if sandbox_cwd is not None and src == sandbox_cwd and dst == sandbox_cwd:
+                cwd_config = Path(config_home).absolute() / "bwrap-wrapper" / "cwd"
+                if cwd_config.is_dir():
+                    for source in sorted(cwd_config.iterdir()):
+                        if source.is_file():
+                            args.extend([
+                                "--ro-bind", str(source),
+                                os.path.join(sandbox_cwd, source.name),
+                            ])
             i += 3
             continue
 

@@ -40,6 +40,11 @@ For these invocations, it:
   `$HOME`, creates `$HOME/.codex`, mounts `$HOME/.codex/packages` read-only, and
   mounts `$HOME/.codex/memories` writable, and mounts `$HOME/.codex/AGENTS.md`
   read-only at the same path. The workspace bind is retained.
+- Mounts each file directly inside `$XDG_CONFIG_HOME/bwrap-wrapper/cwd` read-only
+  at `PATH/<filename>`, including hidden files. If `XDG_CONFIG_HOME` is unset or
+  empty, uses `$HOME/.config`. Directories are skipped; a missing configuration
+  directory adds no mounts. These mounts are inserted immediately after each
+  workspace `--bind PATH PATH`, overlaying workspace files with the same names.
 
 The home mounts require the corresponding source paths to exist. Without
 a workspace path, the `.git` removal and home mount insertion do not occur.
@@ -53,6 +58,7 @@ overlay, and permit writes to Codex memories.
 | `BWRAP_REAL` | `/usr/bin/bwrap` | Real bubblewrap executable |
 | `BWRAP_LOG` | `$HOME/.local/state/bwrap-wrapper.log` | Append-only invocation log |
 | `HOME` | Required from the environment | Home mount paths and default log location |
+| `XDG_CONFIG_HOME` | `$HOME/.config` | Base directory for `bwrap-wrapper/cwd` files |
 
 The shim creates the log's parent directories and sets a restrictive `0077`
 umask. Each entry records the timestamp, user, PID, Codex detection, workspace
