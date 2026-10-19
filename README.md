@@ -1,4 +1,4 @@
-# codex-bwrap-shim
+# bwrap-wrapper
 
 A Python wrapper for bubblewrap that adjusts Codex sandbox arguments, logs each
 invocation, and then replaces itself with the real `bwrap` process. Other
