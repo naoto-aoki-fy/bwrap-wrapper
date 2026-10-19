@@ -38,9 +38,10 @@ For these invocations, it:
 - Removes `--ro-bind PATH/.git PATH/.git` for that workspace.
 - Before the first `--bind PATH PATH` for the workspace, inserts a tmpfs over
   `$HOME`, creates `$HOME/.codex`, mounts `$HOME/.codex/packages` read-only, and
-  mounts `$HOME/.codex/memories` writable. The workspace bind is retained.
+  mounts `$HOME/.codex/memories` writable, and mounts `$HOME/.codex/AGENTS.md`
+  read-only at the same path. The workspace bind is retained.
 
-The home mounts require the corresponding source directories to exist. Without
+The home mounts require the corresponding source paths to exist. Without
 a workspace path, the `.git` removal and home mount insertion do not occur.
 These changes expose the host's `/dev`, remove the workspace `.git` read-only
 overlay, and permit writes to Codex memories.

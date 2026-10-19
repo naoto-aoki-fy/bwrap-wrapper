@@ -119,6 +119,9 @@ def main() -> None:
                         "--bind",
                         os.path.join(home, ".codex/memories"),
                         os.path.join(home, ".codex/memories"),
+                        "--ro-bind",
+                        os.path.join(home, ".codex/AGENTS.md"),
+                        os.path.join(home, ".codex/AGENTS.md"),
                     ])
                     tmpfs_inserted = True
 
