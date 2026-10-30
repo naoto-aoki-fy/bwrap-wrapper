@@ -33,6 +33,8 @@ containing `/` whose basename is `codex`.
 For these invocations, it:
 
 - Converts `--dev /dev` to `--dev-bind /dev /dev`.
+- Hides WSL2 Windows drives detected as `9p` mounts with `aname=drvfs` in
+  `/proc/mounts` by mounting tmpfs over each mount point after the other mounts.
 - Reads `--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH`, normalizes the
   path, and requires it to be absolute when nonempty.
 - Removes `--ro-bind PATH/.git PATH/.git` for that workspace.

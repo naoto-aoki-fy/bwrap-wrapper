@@ -4,12 +4,32 @@ import os
 import sys
 import shlex
 import pwd
+import re
 from pathlib import Path
 from datetime import datetime
 
 
 def format_args(args: list[str]) -> str:
     return " ".join(shlex.quote(arg) for arg in args)
+
+
+def get_windows_mounts() -> list[str]:
+    mounts = []
+    with open("/proc/mounts", encoding="utf-8") as f:
+        for line in f:
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            _, mountpoint, fstype, options = fields[:4]
+            if fstype == "9p" and "aname=drvfs" in re.split(r"[,;]", options):
+                # /proc/mounts encodes whitespace and backslashes as octal escapes.
+                mountpoint = re.sub(
+                    r"\\([0-7]{3})",
+                    lambda match: chr(int(match.group(1), 8)),
+                    mountpoint,
+                )
+                mounts.append(mountpoint)
+    return sorted(set(mounts), key=lambda path: (path.count("/"), path))
 
 
 def main() -> None:
@@ -80,6 +100,8 @@ def main() -> None:
         arg = original_args[i]
 
         if arg == "--":
+            for mountpoint in get_windows_mounts():
+                args.extend(["--tmpfs", mountpoint])
             args.extend(original_args[i:])
             break
 
