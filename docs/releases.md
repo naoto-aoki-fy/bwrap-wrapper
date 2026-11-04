@@ -22,15 +22,13 @@ GitHub may replace older pending runs when several pushes arrive while a release
 is running. The workflow tags the exact commit that was built, pushes the tag,
 and publishes a GitHub release with generated notes and these assets:
 
-- `bwrap-x86_64-unknown-linux-musl.tar.gz`
-- `bwrap-aarch64-unknown-linux-musl.tar.gz`
-- `SHA256SUMS`
+- `bwrap-x86_64-unknown-linux-musl`
+- `bwrap-aarch64-unknown-linux-musl`
 
-Each archive contains the static `bwrap` executable, license, README, and docs.
-Download the archive matching your architecture, check it with
-`sha256sum --check --ignore-missing SHA256SUMS`, and extract it with
-`tar -xzf bwrap-<target>.tar.gz`. Follow the README installation instructions,
-using the extracted executable instead of `target/release/bwrap`.
+Only the two static executables are uploaded as release assets.
+Download the executable matching your architecture and make it executable with
+`chmod +x bwrap-<target>`. Follow the README installation instructions,
+using the downloaded executable instead of `target/release/bwrap`.
 The real Bubblewrap executable is still required.
 
 If publication fails after the tag push, the tag remains on GitHub. Inspect the
