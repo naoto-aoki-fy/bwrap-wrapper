@@ -35,7 +35,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let temp = TempDir::new();
-        let fake = temp.path("fake-bwrap");
+        let fake = temp.path("bwrap");
         std::fs::write(&fake, "#!/bin/sh\nprintf 'PID=%s\\n' \"$$\" > \"$FAKE_RESULT\"\nprintf 'ENV=%s\\n' \"$FAKE_SECRET\" >> \"$FAKE_RESULT\"\nprintf 'ARG=%s\\n' \"$@\" >> \"$FAKE_RESULT\"\nif [ -f \"$BWRAP_LOG\" ]; then printf 'LOG=present\\n' >> \"$FAKE_RESULT\"; fi\nexit \"$FAKE_EXIT\"\n").unwrap();
         let mut permissions = std::fs::metadata(&fake).unwrap().permissions();
         permissions.set_mode(0o755);
@@ -51,9 +51,8 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bwrap"));
         command
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", &self.temp.0)
             .env("HOME", self.temp.path("home"))
-            .env("BWRAP_REAL", &self.fake)
             .env("BWRAP_LOG", &self.log)
             .env("FAKE_RESULT", &self.result)
             .env("FAKE_EXIT", "0")
@@ -138,7 +137,7 @@ fn non_codex_passthrough_logs_before_exec_and_inherits_environment_and_pid() {
     assert!(log.contains("Sandbox CWD: (not specified)\n"));
     assert!(log.contains("Original args: --dev /dev 'plain argument' 'it'\"'\"'s quoted' ''\n"));
     assert!(log.contains("FAKE_SECRET=inherited-value\n"));
-    assert!(log.find("BWRAP_REAL=").unwrap() < log.find("FAKE_RESULT=").unwrap());
+    assert!(log.find("BWRAP_LOG=").unwrap() < log.find("FAKE_RESULT=").unwrap());
 }
 
 #[test]
@@ -252,24 +251,57 @@ fn missing_home_relative_workspace_and_log_failure_never_execute() {
 }
 
 #[test]
-fn exec_failure_is_reported_after_logging_and_nonexecutable_is_not_run() {
+fn missing_or_nonexecutable_bwrap_is_reported() {
     let fixture = Fixture::new();
-    let mut missing = fixture.command(&["--", "/bin/true"]);
-    missing.env("BWRAP_REAL", fixture.temp.path("does-not-exist"));
-    let output = missing.output().unwrap();
+    std::fs::set_permissions(&fixture.fake, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = fixture.run(&[]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to execute"));
-    assert!(fixture.log.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("found in PATH"));
     assert!(!fixture.result.exists());
+    std::fs::remove_file(&fixture.fake).unwrap();
+    assert!(!fixture.run(&[]).status.success());
+    let mut command = fixture.command(&[]);
+    command.env_remove("PATH");
+    assert!(String::from_utf8_lossy(&command.output().unwrap().stderr).contains("PATH is not set"));
+}
 
-    let nonexecutable = fixture.temp.path("no-execute");
-    std::fs::write(&nonexecutable, "#!/bin/sh\nexit 0\n").unwrap();
-    let mut permissions = std::fs::metadata(&nonexecutable).unwrap().permissions();
-    permissions.set_mode(0o600);
-    std::fs::set_permissions(&nonexecutable, permissions).unwrap();
-    let mut command = fixture.command(&["--", "/bin/true"]);
-    command.env("BWRAP_REAL", nonexecutable);
+#[test]
+fn path_skips_self_aliases_and_invalid_candidates() {
+    let fixture = Fixture::new();
+    let mut directories = Vec::new();
+    for name in [
+        "self",
+        "symlink",
+        "hardlink",
+        "nonexec",
+        "directory",
+        "broken",
+    ] {
+        let dir = fixture.temp.path(name);
+        std::fs::create_dir(&dir).unwrap();
+        directories.push(dir);
+    }
+    let own = fixture.temp.path("wrapper");
+    std::fs::copy(env!("CARGO_BIN_EXE_bwrap"), &own).unwrap();
+    std::os::unix::fs::symlink(&own, directories[0].join("bwrap")).unwrap();
+    std::os::unix::fs::symlink(directories[0].join("bwrap"), directories[1].join("bwrap")).unwrap();
+    std::fs::hard_link(&own, directories[2].join("bwrap")).unwrap();
+    std::fs::write(directories[3].join("bwrap"), "not executable").unwrap();
+    std::fs::create_dir(directories[4].join("bwrap")).unwrap();
+    std::os::unix::fs::symlink("absent", directories[5].join("bwrap")).unwrap();
+    let template = fixture.command(&["argument"]);
+    let mut command = Command::new(&own);
+    command.env_clear().args(["argument"]);
+    for (key, value) in template.get_envs() {
+        command.env(key, value.unwrap());
+    }
+    command.env("PATH", std::env::join_paths(&directories).unwrap());
     assert!(!command.output().unwrap().status.success());
+    directories.push(fixture.temp.0.clone());
+    command.env("PATH", std::env::join_paths(&directories).unwrap());
+    command.env("BWRAP_REAL", "/ignored/legacy/override");
+    assert!(command.output().unwrap().status.success());
+    assert_eq!(fixture.lines()[2], "ARG=argument");
 }
 
 #[test]
@@ -290,13 +322,7 @@ fn logging_failure_stops_before_attempting_the_default_real_executable() {
 }
 
 #[test]
-fn empty_bwrap_real_and_log_values_preserve_reference_failure_behavior() {
-    let fixture = Fixture::new();
-    let mut command = fixture.command(&["--", "/bin/true"]);
-    command.env("BWRAP_REAL", "");
-    assert!(!command.output().unwrap().status.success());
-    assert!(fixture.log.exists());
-
+fn empty_log_value_fails() {
     let fixture = Fixture::new();
     let mut command = fixture.command(&["--", "/bin/true"]);
     command.env("BWRAP_LOG", "");
@@ -317,13 +343,10 @@ fn non_utf8_arguments_fail_logging_before_exec_like_python() {
 }
 
 #[test]
-fn relative_executable_path_uses_execv_without_path_search() {
+fn empty_path_entry_searches_current_directory() {
     let fixture = Fixture::new();
     let mut command = fixture.command(&["argument"]);
-    command
-        .current_dir(&fixture.temp.0)
-        .env("BWRAP_REAL", "fake-bwrap")
-        .env("PATH", "/does-not-contain-the-executable");
+    command.current_dir(&fixture.temp.0).env("PATH", "");
     assert!(command.output().unwrap().status.success());
     assert_eq!(fixture.lines()[2], "ARG=argument");
 }
@@ -416,7 +439,7 @@ fn absolute_configuration_home_works_after_cwd_is_deleted() {
     command.env("BWRAP_TEST_CWD", &deleted)
         .env("BWRAP_TEST_DRIVER", driver.get_program())
         .env("XDG_CONFIG_HOME", fixture.temp.path("absolute-config"))
-        .args(["-c", "cd \"$BWRAP_TEST_CWD\" && rmdir \"$BWRAP_TEST_CWD\" && exec \"$BWRAP_TEST_DRIVER\" --exact fixture_driver --nocapture"]);
+        .args(["-c", "cd \"$BWRAP_TEST_CWD\" && /bin/rmdir \"$BWRAP_TEST_CWD\" && exec \"$BWRAP_TEST_DRIVER\" --exact fixture_driver --nocapture"]);
     let output = command.output().unwrap();
     assert!(
         output.status.success(),

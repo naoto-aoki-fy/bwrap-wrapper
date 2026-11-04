@@ -104,7 +104,7 @@ def main():
         (config / "broken").symlink_to("absent")
         mounts = root / "mounts"
         mounts.write_text("x /mnt/c 9p rw,aname=drvfs\nx /mnt/c 9p aname=drvfs\nx /mnt/c/deep/a 9p rw;aname=drvfs\rx /mnt/d\\040space 9p aname=drvfs\nx /z\\134path 9p aname=drvfs\nx /not-windows ext4 aname=drvfs\n", encoding="utf-8")
-        fake = root / "fake"
+        fake = root / "bwrap"
         fake.write_text('#!/bin/sh\nprintf "%s\\0" "$@" > "$BWRAP_TEST_RESULT"\nexit 0\n')
         fake.chmod(0o755)
         log = root / "state/log"
@@ -112,7 +112,7 @@ def main():
         args_file = root / "args"
         environment = {
             "HOME": str(root / "home"), "BWRAP_REAL": str(fake), "BWRAP_LOG": str(log),
-            "XDG_CONFIG_HOME": str(root / "xdg"), "PATH": "/usr/bin:/bin", "TZ": "UTC0",
+            "XDG_CONFIG_HOME": str(root / "xdg"), "PATH": str(root), "TZ": "UTC0",
             "LC_ALL": "C.UTF-8", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
             "BWRAP_TEST_ARGS": str(args_file), "BWRAP_TEST_MOUNTS": str(mounts),
             "BWRAP_TEST_RESULT": str(result), "A_MARKER": "value with spaces", "Z_MARKER": "λ",
@@ -148,6 +148,7 @@ def main():
                 environment_case["XDG_CONFIG_HOME"] = str(root / ("x" * 300))
             elif index == len(cases) - 3:
                 environment_case["BWRAP_REAL"] = ""
+                environment_case["PATH"] = str(root / "missing-bin")
             elif index == len(cases) - 2:
                 environment_case["BWRAP_LOG"] = ""
             elif index == len(cases) - 1:

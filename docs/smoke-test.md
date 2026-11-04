@@ -9,15 +9,15 @@ Run from the repository root:
 ```sh
 cargo build --release
 smoke_dir=$(mktemp -d)
-cat > "$smoke_dir/fake-bwrap" <<'SH'
+cat > "$smoke_dir/bwrap" <<'SH'
 #!/bin/sh
 printf 'replacement PID: %s\n' "$$"
 printf 'argument: <%s>\n' "$@"
 printf 'inherited marker: %s\n' "$SMOKE_MARKER"
 exit 23
 SH
-chmod 755 "$smoke_dir/fake-bwrap"
-env -i PATH=/usr/bin:/bin HOME="$smoke_dir/home" BWRAP_REAL="$smoke_dir/fake-bwrap" \
+chmod 755 "$smoke_dir/bwrap"
+env -i PATH="$smoke_dir:/usr/bin:/bin" HOME="$smoke_dir/home" \
   BWRAP_LOG="$smoke_dir/invocations.log" SMOKE_MARKER=visible \
   ./target/release/bwrap --dev /dev -- /bin/true 'two words'
 smoke_status=$?

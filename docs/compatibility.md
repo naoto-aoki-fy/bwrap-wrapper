@@ -18,10 +18,10 @@ explicit rewrite, with the reference revision acknowledged in the crate and READ
 | Windows drives | Synthetic 9p tables, comma/semicolon options, exact token matching, octal decoding, duplicates, nested paths, Python whitespace, CR/LF input |
 | Command tail | First unconsumed separator and remaining arguments retained; malformed bind consuming separator does not trigger mounts |
 | Non-Codex calls | No workspace validation or discovery, arguments unchanged, logging still required |
-| Environment | Required HOME; unset and empty variable semantics; relative XDG paths; empty/relative executable paths |
+| Environment | Required HOME; unset and empty variable semantics; relative XDG paths; PATH discovery excluding this executable |
 | Logs | Python boolean spelling, local ISO timestamp with offset seconds when needed, UID username, PID, shlex quoting, sorted environment, permissions, failures before exec |
 | Unix bytes | Pure transformation preserves invalid UTF-8; runtime logging rejects it like Python's strict encoder, including invalid environment values |
-| Process execution | Actual execv, no PATH search, same PID, inherited environment and stdin/stdout/stderr, exit code and signal propagation; no execution on error |
+| Process execution | PATH discovery followed by actual execv, same PID, inherited environment and stdin/stdout/stderr, exit code and signal propagation; no execution on error |
 
 The Phase 3 audit corrected these differences from the previous Rust phases:
 
@@ -40,6 +40,14 @@ The Phase 3 audit corrected these differences from the previous Rust phases:
 - Mount parsing includes Python's additional whitespace characters and universal
   newline behavior. Discovery callbacks replace duplicated runtime argument scans.
 - Buffered log writes and explicit close-error handling complete before exec.
+
+## Executable discovery
+
+Rust intentionally replaces the Python `BWRAP_REAL` override and fixed default
+with PATH discovery, excluding its own device/inode identity. Runtime regressions
+cover self aliases, invalid candidates, missing PATH, empty PATH entries, and an
+ignored legacy override. The differential checker supplies the same fake `bwrap`
+through PATH for Rust and through the legacy override for Python.
 
 ## Current sandbox helper compatibility extension
 

@@ -14,19 +14,20 @@ From the repository root:
 cargo build --release
 test -x /usr/bin/bwrap
 install -Dm755 target/release/bwrap "$HOME/.local/lib/bwrap-wrapper/bin/bwrap"
-export BWRAP_REAL=/usr/bin/bwrap
 export PATH="$HOME/.local/lib/bwrap-wrapper/bin:$PATH"
 codex
 ```
 
-Adjust `/usr/bin/bwrap` to the real installed Bubblewrap path before changing
-PATH. The wrapper binary is `target/release/bwrap`; the Cargo package is
-`bwrap-wrapper-rs`. Do not overwrite the real Bubblewrap. `command -v bwrap`
-after the PATH change should identify the wrapper, so do not use that result as
-`BWRAP_REAL`. Persist the exports in your shell configuration if desired.
+Keep the original Bubblewrap in PATH and install the wrapper in a separate
+directory. The wrapper searches PATH in order for an executable regular file
+named `bwrap`, skipping itself, including symlinks and hard links to itself.
+Missing, broken, directory, and non-executable candidates are skipped. Relative
+and empty PATH entries are resolved from the working directory (empty means the
+current directory). An unset PATH or no suitable candidate causes a nonzero error.
+`BWRAP_REAL` is no longer used. Persist the PATH export in your shell configuration
+if desired. The wrapper binary is `target/release/bwrap`; the Cargo package is
+`bwrap-wrapper-rs`.
 
-`BWRAP_REAL` is passed to `execv` without searching PATH. Absolute paths are
-recommended; a relative value is interpreted from the process working directory.
 The wrapper preserves PID, environment, standard streams, exit status, and
 signal termination by replacing the process. Execution failure exits nonzero.
 
@@ -35,7 +36,7 @@ signal termination by replacing the process. Execution failure exits nonzero.
 | Variable | Unset default | Empty value |
 | --- | --- | --- |
 | `HOME` | Required; absence fails even for non-Codex calls | Accepted, as in Python |
-| `BWRAP_REAL` | `/usr/bin/bwrap` | Preserved; exec fails |
+| `PATH` | Required to find Bubblewrap | Searches the current directory |
 | `BWRAP_LOG` | `$HOME/.local/state/bwrap-wrapper.log` | Preserved; logging fails |
 | `XDG_CONFIG_HOME` | `$HOME/.config` | Uses `$HOME/.config` |
 

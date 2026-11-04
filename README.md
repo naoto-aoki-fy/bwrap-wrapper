@@ -10,13 +10,12 @@ Build and install into a separate directory, keeping the real executable intact:
 ```sh
 cargo build --release
 install -Dm755 target/release/bwrap "$HOME/.local/lib/bwrap-wrapper/bin/bwrap"
-export BWRAP_REAL=/usr/bin/bwrap  # absolute path to the real Bubblewrap
 export PATH="$HOME/.local/lib/bwrap-wrapper/bin:$PATH"
 codex
 ```
 
 `HOME` is required. Logs include the entire environment and can contain secrets.
-Always point `BWRAP_REAL` at the original executable to avoid recursion.
+The wrapper searches PATH for the first executable `bwrap` other than itself.
 
 - [Usage, environment variables, mount behavior, and logging](docs/usage.md)
 - [Safe smoke test using a fake executable](docs/smoke-test.md)

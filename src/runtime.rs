@@ -3,10 +3,10 @@ use crate::{config, logging, mounts, transform};
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 
 struct Settings {
     home: OsString,
-    real_bwrap: OsString,
     log_file: OsString,
     config_home: Option<OsString>,
 }
@@ -14,12 +14,10 @@ struct Settings {
 impl Settings {
     fn from_values(
         home: Option<OsString>,
-        real_bwrap: Option<OsString>,
         log_file: Option<OsString>,
         config_home: Option<OsString>,
     ) -> Result<Self, String> {
         let home = home.ok_or("HOME environment variable is required")?;
-        let real_bwrap = real_bwrap.unwrap_or_else(|| "/usr/bin/bwrap".into());
         let log_file = log_file.unwrap_or_else(|| {
             let mut value = home.as_bytes().to_vec();
             value.extend_from_slice(b"/.local/state/bwrap-wrapper.log");
@@ -27,7 +25,6 @@ impl Settings {
         });
         Ok(Self {
             home,
-            real_bwrap,
             log_file,
             config_home,
         })
@@ -36,7 +33,6 @@ impl Settings {
     fn from_environment() -> Result<Self, String> {
         Self::from_values(
             std::env::var_os("HOME"),
-            std::env::var_os("BWRAP_REAL"),
             std::env::var_os("BWRAP_LOG"),
             std::env::var_os("XDG_CONFIG_HOME"),
         )
@@ -81,16 +77,37 @@ fn run_with_mount_reader(
     )
     .map_err(|e| e.to_string())?;
 
+    let real_bwrap = find_bwrap()?;
     let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     environment.sort_by_cached_key(|(key, _)| config::python_name_sort_key(key));
-    log.append(&settings.real_bwrap, original, &output, &environment)
+    log.append(&real_bwrap, original, &output, &environment)
         .map_err(|e| format!("failed to write invocation log: {e}"))?;
-    execv(&settings.real_bwrap, &output.args).map_err(|e| {
-        format!(
-            "failed to execute {}: {e}",
-            settings.real_bwrap.to_string_lossy()
-        )
-    })
+    execv(&real_bwrap, &output.args)
+        .map_err(|e| format!("failed to execute {}: {e}", real_bwrap.to_string_lossy()))
+}
+
+/// Follow links and compare file identity so aliases of this executable cannot recurse.
+fn find_bwrap() -> Result<OsString, String> {
+    let own = std::fs::metadata("/proc/self/exe")
+        .map_err(|e| format!("failed to identify current executable: {e}"))?;
+    let path = std::env::var_os("PATH").ok_or("PATH is not set; cannot find bwrap")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join("bwrap");
+        let Ok(metadata) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.is_file() || (metadata.dev(), metadata.ino()) == (own.dev(), own.ino()) {
+            continue;
+        }
+        let Ok(c_path) = CString::new(candidate.as_os_str().as_bytes()) else {
+            continue;
+        };
+        // SAFETY: c_path is a valid, live NUL-terminated path.
+        if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } == 0 {
+            return Ok(candidate.into_os_string());
+        }
+    }
+    Err("no executable bwrap other than this wrapper found in PATH".into())
 }
 
 fn execv(path: &OsStr, args: &[OsString]) -> io::Result<()> {
@@ -120,19 +137,13 @@ mod tests {
 
     #[test]
     fn environment_defaults_and_empty_values_match_reference() {
-        let settings = Settings::from_values(Some("/home/u".into()), None, None, None).unwrap();
-        assert_eq!(settings.real_bwrap, "/usr/bin/bwrap");
+        let settings = Settings::from_values(Some("/home/u".into()), None, None).unwrap();
         assert_eq!(settings.log_file, "/home/u/.local/state/bwrap-wrapper.log");
         assert_eq!(settings.config_home, None);
 
-        let settings = Settings::from_values(
-            Some("/home/u/".into()),
-            Some("".into()),
-            Some("".into()),
-            Some("".into()),
-        )
-        .unwrap();
-        assert_eq!(settings.real_bwrap, "");
+        let settings =
+            Settings::from_values(Some("/home/u/".into()), Some("".into()), Some("".into()))
+                .unwrap();
         assert_eq!(settings.log_file, "");
         assert_eq!(
             settings.config_home.as_deref(),
