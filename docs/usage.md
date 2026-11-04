@@ -5,7 +5,8 @@
 Supported targets are Linux and WSL2 Linux distributions. Use a stable Rust
 compiler supporting edition 2024 (1.85+), Cargo, and a system linker. The only
 Cargo dependency is `libc`. Actual sandboxing needs a working Bubblewrap and the
-host's normal user/mount namespace support. Tests use fake executables instead.
+host's normal user/mount namespace support. Ordinary runtime tests use fake executables; the separate
+[real isolation suite](isolation.md) verifies effective mounts with Bubblewrap.
 
 From the repository root:
 
@@ -44,18 +45,18 @@ sources described below must exist for real Bubblewrap to mount them.
 
 ## Codex invocation detection and workspace
 
-Both conditions are required:
+Two invocation formats are supported:
 
-1. Before the first `--`, an adjacent pair is exactly
-   `--argv0 codex-linux-sandbox`.
-2. The next argument after that first separator contains `/` and has basename
-   exactly `codex`. `/opt/codex` and `./codex` qualify; `codex` and `/opt/codex/`
-   do not.
+- Legacy: an adjacent `--argv0 codex-linux-sandbox` pair before the first `--`,
+  then an executable path containing `/` with basename exactly `codex`.
+- Current: immediately after the first `--`, an executable with exact basename
+  `codex-linux-sandbox` (including a bare helper name, without a trailing slash).
 
-Other calls are logged and forwarded unchanged. For a recognized call, the first
-`--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH` anywhere in the original
-argument list supplies the workspace. This scan includes command arguments after
-`--`, as in Python. A missing final value or an empty value means unspecified.
+Other calls are logged and forwarded unchanged. The first workspace option,
+`--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH`, supplies the workspace.
+Legacy calls scan the entire argument list as Python does. Current calls scan
+only the helper arguments before its nested `--`, excluding shell arguments.
+A missing final value or an empty value means unspecified.
 An option followed by another token consumes that token as its value, including
 `--`. Nonempty values are normalized lexically with Python `os.path.normpath`
 semantics and must be absolute. Symlinks are not resolved and existence is not
@@ -145,3 +146,6 @@ log entry; log-directory creation can occur even when workspace validation fails
 Missing HOME, invalid workspace, discovery failures, logging failures, and failed
 exec all stop with a nonzero status. There is no fallback to unmodified arguments.
 See the [audit](compatibility.md) for validation boundaries and diagnostic details.
+
+See [real mount isolation results](isolation.md) for verified permissions and
+the confirmed startup limitation for helpers under `.codex/tmp`.

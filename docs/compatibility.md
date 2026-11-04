@@ -138,7 +138,9 @@ project or system toolchain change is required by the implementation.
   access, effective workspace overlays, and Windows-drive visibility still need
   manual validation on the target Linux/WSL2 host. Synthetic parsing and fake
   execution demonstrate argument construction and process behavior, not actual
-  mount isolation. No real Bubblewrap is run by the automated suite.
+  mount isolation. Ordinary tests do not run real Bubblewrap. The separate opt-in
+  [isolation suite](isolation.md) has verified synthetic mounts on this Linux
+  host and records a helper startup incompatibility.
 
 ## Project structure
 
