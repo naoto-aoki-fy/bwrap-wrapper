@@ -24,16 +24,48 @@ pub fn directory(home: &OsStr, xdg_config_home: Option<&OsStr>, cwd: &OsStr) -> 
 /// Like the reference, missing/non-directory paths yield no mounts, while listing errors propagate.
 pub fn files(directory: &OsStr) -> io::Result<Vec<OsString>> {
     let path = Path::new(directory);
-    if !path.is_dir() {
+    if !metadata_matches(path, std::fs::Metadata::is_dir)? {
         return Ok(Vec::new());
     }
     let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| python_name_sort_key(&entry.file_name()));
-    Ok(entries
-        .into_iter()
-        .filter(|entry| entry.path().is_file())
-        .map(|entry| entry.path().into_os_string())
-        .collect())
+    let mut files = Vec::new();
+    for entry in entries {
+        if metadata_matches(&entry.path(), std::fs::Metadata::is_file)? {
+            files.push(entry.path().into_os_string());
+        }
+    }
+    Ok(files)
+}
+
+/// Preserve the audited Python pathlib's distinction between missing paths and I/O failures.
+fn metadata_matches(path: &Path, matches: fn(&std::fs::Metadata) -> bool) -> io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(matches(&metadata)),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOENT | libc::ENOTDIR | libc::EBADF | libc::ELOOP)
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Discover at each matching bind; absolute config homes do not require a live cwd.
+pub fn discover(home: &OsStr, xdg_config_home: Option<&OsStr>) -> io::Result<Vec<OsString>> {
+    let base = xdg_config_home
+        .filter(|s| !s.is_empty())
+        .map(OsStr::to_owned)
+        .unwrap_or_else(|| join(home, OsStr::new(".config")));
+    let cwd = if base.as_bytes().starts_with(b"/") {
+        OsString::from("/")
+    } else {
+        std::env::current_dir()?.into_os_string()
+    };
+    files(&directory(home, xdg_config_home, &cwd))
 }
 
 // Python sorts filesystem names after decoding UTF-8 with surrogateescape.

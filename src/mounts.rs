@@ -3,8 +3,12 @@ use std::ffi::OsString;
 
 pub fn parse(contents: &str) -> Vec<OsString> {
     let mut mounts = Vec::new();
-    for line in contents.lines() {
-        let fields: Vec<_> = line.split_whitespace().take(4).collect();
+    for line in contents.split(['\n', '\r']) {
+        let fields: Vec<_> = line
+            .split(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
+            .filter(|field| !field.is_empty())
+            .take(4)
+            .collect();
         if fields.len() < 4
             || fields[2] != "9p"
             || !fields[3].split([',', ';']).any(|o| o == "aname=drvfs")

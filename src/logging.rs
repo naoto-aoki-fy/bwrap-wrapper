@@ -2,63 +2,114 @@
 use crate::transform::Output;
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
+use std::os::fd::IntoRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-pub fn append(
-    path: &OsStr,
-    real_bwrap: &OsStr,
-    original: &[OsString],
-    output: &Output,
-    environment: &[(OsString, OsString)],
-) -> io::Result<()> {
-    let parent = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    })?;
-    let timestamp = local_timestamp()?;
-    // SAFETY: getuid is side-effect free; getpwuid returns static storage copied before another libc call.
-    let username = unsafe {
-        let record = libc::getpwuid(libc::getuid());
-        if record.is_null() || (*record).pw_name.is_null() {
+pub struct InvocationLog {
+    path: OsString,
+    timestamp: String,
+    username: Vec<u8>,
+}
+
+impl InvocationLog {
+    /// Prepare directories and identity before workspace validation, as Python does.
+    pub fn prepare(path: &OsStr) -> io::Result<Self> {
+        let normalized = crate::paths::normalize(path, false);
+        let parent = Path::new(&normalized)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        })?;
+        let timestamp = local_timestamp()?;
+        // SAFETY: this process entry point runs on one thread. Copy passwd storage immediately.
+        let username = unsafe {
+            let record = libc::getpwuid(libc::getuid());
+            if record.is_null() || (*record).pw_name.is_null() {
+                return Err(io::Error::other("no username for current UID"));
+            }
+            CStr::from_ptr((*record).pw_name).to_bytes().to_vec()
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            timestamp,
+            username,
+        })
+    }
+
+    pub fn append(
+        &self,
+        real_bwrap: &OsStr,
+        original: &[OsString],
+        output: &Output,
+        environment: &[(OsString, OsString)],
+    ) -> io::Result<()> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        let mut file = BufWriter::new(file);
+        let timestamp = &self.timestamp;
+        writeln!(file, "\n========== BWRAP START ==========")?;
+        writeln!(file, "Timestamp: {timestamp}")?;
+        file.write_all(b"User: ")?;
+        write_utf8(&mut file, &self.username)?;
+        writeln!(file)?;
+        writeln!(file, "PID: {}", std::process::id())?;
+        writeln!(file, "Codex invocation: {}", python_bool(output.is_codex))?;
+        file.write_all(b"Bwrap: ")?;
+        write_utf8(&mut file, real_bwrap.as_bytes())?;
+        writeln!(file)?;
+        file.write_all(b"Sandbox CWD: ")?;
+        if let Some(workspace) = &output.workspace {
+            write_utf8(&mut file, workspace.as_bytes())?;
+        } else {
+            file.write_all(b"(not specified)")?;
+        }
+        writeln!(file)?;
+        writeln!(
+            file,
+            "Tmpfs inserted: {}",
+            python_bool(output.home_inserted)
+        )?;
+        file.write_all(b"Original args: ")?;
+        write_args(&mut file, original)?;
+        file.write_all(b"\nModified args: ")?;
+        write_args(&mut file, &output.args)?;
+        file.write_all(b"\n\nEnvironment:\n")?;
+        for (key, value) in environment {
+            write_utf8(&mut file, key.as_bytes())?;
+            file.write_all(b"=")?;
+            write_utf8(&mut file, value.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
+        file.write_all(b"=========== BWRAP END ===========\n")?;
+        let file = file.into_inner().map_err(|error| error.into_error())?;
+        let descriptor = file.into_raw_fd();
+        // SAFETY: ownership was consumed above; close once and report delayed I/O errors.
+        if unsafe { libc::close(descriptor) } == -1 {
             return Err(io::Error::last_os_error());
         }
-        CStr::from_ptr((*record).pw_name).to_bytes().to_vec()
-    };
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "\n========== BWRAP START ==========")?;
-    writeln!(file, "Timestamp: {timestamp}")?;
-    file.write_all(b"User: ")?;
-    file.write_all(&username)?;
-    writeln!(file)?;
-    writeln!(file, "PID: {}", std::process::id())?;
-    writeln!(file, "Codex invocation: {}", output.is_codex)?;
-    file.write_all(b"Bwrap: ")?;
-    file.write_all(real_bwrap.as_bytes())?;
-    writeln!(file)?;
-    file.write_all(b"Sandbox CWD: ")?;
-    if let Some(workspace) = &output.workspace {
-        file.write_all(workspace.as_bytes())?;
-    } else {
-        file.write_all(b"(not specified)")?;
+        Ok(())
     }
-    writeln!(file)?;
-    writeln!(file, "Tmpfs inserted: {}", output.home_inserted)?;
-    file.write_all(b"Original args: ")?;
-    write_args(&mut file, original)?;
-    file.write_all(b"\nModified args: ")?;
-    write_args(&mut file, &output.args)?;
-    file.write_all(b"\n\nEnvironment:\n")?;
-    for (key, value) in environment {
-        file.write_all(key.as_bytes())?;
-        file.write_all(b"=")?;
-        file.write_all(value.as_bytes())?;
-        file.write_all(b"\n")?;
-    }
-    file.write_all(b"=========== BWRAP END ===========\n")
+}
+
+fn python_bool(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+fn write_utf8(file: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    std::str::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invocation log contains non-UTF-8 data",
+        )
+    })?;
+    file.write_all(bytes)
 }
 
 fn write_args(file: &mut impl Write, args: &[OsString]) -> io::Result<()> {
@@ -67,6 +118,13 @@ fn write_args(file: &mut impl Write, args: &[OsString]) -> io::Result<()> {
             file.write_all(b" ")?;
         }
         let bytes = arg.as_bytes();
+        // Python decodes argv with surrogateescape, then its strict UTF-8 log writer fails.
+        std::str::from_utf8(bytes).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invocation log contains non-UTF-8 argument",
+            )
+        })?;
         if !bytes.is_empty() && bytes.iter().all(|byte| safe_byte(*byte)) {
             file.write_all(bytes)?;
         } else {
@@ -99,7 +157,7 @@ fn local_timestamp() -> io::Result<String> {
         if libc::localtime_r(&now, &mut local).is_null() {
             return Err(io::Error::last_os_error());
         }
-        let format = b"%Y-%m-%dT%H:%M:%S%:z\0";
+        let format = b"%Y-%m-%dT%H:%M:%S\0";
         let mut buffer = [0u8; 128];
         let count = libc::strftime(
             buffer.as_mut_ptr().cast(),
@@ -110,7 +168,19 @@ fn local_timestamp() -> io::Result<String> {
         if count == 0 {
             return Err(io::Error::other("could not format local timestamp"));
         }
-        String::from_utf8(buffer[..count].to_vec())
-            .map_err(|_| io::Error::other("local timestamp was not UTF-8"))
+        let mut timestamp = String::from_utf8(buffer[..count].to_vec())
+            .map_err(|_| io::Error::other("local timestamp was not UTF-8"))?;
+        let offset = local.tm_gmtoff;
+        let sign = if offset < 0 { '-' } else { '+' };
+        let seconds = offset.unsigned_abs();
+        timestamp.push_str(&format!(
+            "{sign}{:02}:{:02}",
+            seconds / 3600,
+            (seconds / 60) % 60
+        ));
+        if seconds % 60 != 0 {
+            timestamp.push_str(&format!(":{:02}", seconds % 60));
+        }
+        Ok(timestamp)
     }
 }

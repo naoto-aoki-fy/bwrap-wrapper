@@ -498,3 +498,125 @@ fn configuration_filename_bytes_use_python_surrogateescape_sort_order() {
     .unwrap();
     assert!(out.args.contains(&OsString::from_vec(b"/w/\xff".to_vec())));
 }
+
+#[test]
+fn discovery_repeats_after_each_bind_and_mounts_come_last() {
+    use std::cell::RefCell;
+    let temp = TempDir::new();
+    std::fs::write(temp.0.join(".first"), "first").unwrap();
+    let events = RefCell::new(Vec::new());
+    let mut calls = 0;
+    let args = codex(
+        &[
+            "--sandbox-policy-cwd=/w",
+            "--bind",
+            "/w",
+            "/w",
+            "--bind",
+            "/w",
+            "/w",
+        ],
+        &[],
+    );
+    let output = transform::transform_with_discovery(
+        &args,
+        OsStr::new("/home/u"),
+        || {
+            events.borrow_mut().push("config");
+            let files = config::files(temp.0.as_os_str())?;
+            if calls == 0 {
+                std::fs::remove_file(temp.0.join(".first"))?;
+                std::fs::write(temp.0.join("second"), "second")?;
+            }
+            calls += 1;
+            Ok::<_, std::io::Error>(files)
+        },
+        || {
+            events.borrow_mut().push("mounts");
+            Ok(strings(&["/mnt/c"]))
+        },
+    )
+    .unwrap();
+    assert_eq!(*events.borrow(), ["config", "config", "mounts"]);
+    assert_eq!(output.args.iter().filter(|arg| *arg == "--dir").count(), 1);
+    let first = output
+        .args
+        .iter()
+        .position(|arg| *arg == "/w/.first")
+        .unwrap();
+    let second = output
+        .args
+        .iter()
+        .position(|arg| *arg == "/w/second")
+        .unwrap();
+    assert!(first < second);
+    assert_eq!(
+        &output.args[second + 1..],
+        strings(&["--tmpfs", "/mnt/c", "--", "/opt/bin/codex"])
+    );
+}
+
+#[test]
+fn discovery_is_lazy_and_errors_abort_the_rewrite() {
+    let unneeded = || -> Result<Vec<OsString>, std::io::Error> { panic!("unexpected discovery") };
+    let non_codex = strings(&[
+        "--argv0=codex-linux-sandbox",
+        "--dev",
+        "/dev",
+        "--",
+        "/bin/codex",
+    ]);
+    assert_eq!(
+        transform::transform_with_discovery(&non_codex, OsStr::new("/h"), unneeded, unneeded)
+            .unwrap()
+            .args,
+        non_codex
+    );
+    let malformed = codex(&["--bind", "source"], &[]);
+    assert_eq!(
+        transform::transform_with_discovery(&malformed, OsStr::new("/h"), unneeded, unneeded)
+            .unwrap()
+            .args,
+        malformed
+    );
+    let args = codex(&["--sandbox-policy-cwd=/w", "--bind", "/w", "/w"], &[]);
+    let result = transform::transform_with_discovery(
+        &args,
+        OsStr::new("/h"),
+        || Err(std::io::Error::other("configuration failure")),
+        unneeded,
+    );
+    assert!(matches!(
+        result,
+        Err(transform::DiscoveryError::Discovery(_))
+    ));
+}
+
+#[test]
+fn empty_configuration_and_non_missing_metadata_errors() {
+    let temp = TempDir::new();
+    assert!(config::files(temp.0.as_os_str()).unwrap().is_empty());
+    let long = "x".repeat(300);
+    let error = config::files(temp.0.join(&long).as_os_str()).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+    symlink(&long, temp.0.join("bad-target")).unwrap();
+    let error = config::files(temp.0.as_os_str()).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+}
+
+#[test]
+fn mount_parsing_handles_nested_paths_python_whitespace_and_cr_lines() {
+    let table = "x /deep/a/b 9p aname=drvfs\rx /deep/a 9p aname=drvfs\nx /deep/a 9p aname=drvfs\n\
+        x\u{1c}/z\u{1f}9p\u{1d}rw;aname=drvfs\n\
+        x /deep\\057a/b/c 9p aname=drvfs\nx /escaped\\040space 9p aname=drvfs\n";
+    assert_eq!(
+        mounts::parse(table),
+        strings(&[
+            "/escaped space",
+            "/z",
+            "/deep/a",
+            "/deep/a/b",
+            "/deep/a/b/c"
+        ])
+    );
+}

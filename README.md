@@ -1,56 +1,28 @@
 # bwrap-wrapper-rs
 
-A Linux Rust port of `bwrap-wrapper`, compatible with the Python reference at
-revision `e614a089b80b6f7832edd66950bba8f06abe0040`. It targets stable Rust
-2024, uses the small `libc` crate for POSIX process and time calls, and does not
-need Python at runtime.
+A standalone Rust wrapper for Bubblewrap on Linux and WSL2. It adjusts Codex
+sandbox mounts, logs each invocation, and replaces itself with the real `bwrap`.
+Other invocations retain their arguments.
 
-Build and verify it with:
+Requires stable Rust 1.85+ (edition 2024), a linker, and Bubblewrap for actual use.
+Build and install into a separate directory, keeping the real executable intact:
 
 ```sh
 cargo build --release
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+install -Dm755 target/release/bwrap "$HOME/.local/lib/bwrap-wrapper/bin/bwrap"
+export BWRAP_REAL=/usr/bin/bwrap  # absolute path to the real Bubblewrap
+export PATH="$HOME/.local/lib/bwrap-wrapper/bin:$PATH"
+codex
 ```
 
-The Cargo package is `bwrap-wrapper-rs`, and the executable is `bwrap`. Put it
-earlier in `PATH` than Codex's Bubblewrap lookup. Set `BWRAP_REAL` to the actual
-Bubblewrap path if needed, so the shim does not call itself recursively.
+`HOME` is required. Logs include the entire environment and can contain secrets.
+Always point `BWRAP_REAL` at the original executable to avoid recursion.
 
-## Behavior
+- [Usage, environment variables, mount behavior, and logging](docs/usage.md)
+- [Safe smoke test using a fake executable](docs/smoke-test.md)
+- [Compatibility audit, tests, project structure, and limitations](docs/compatibility.md)
 
-Every invocation requires `HOME`, logs the original and forwarded arguments,
-then replaces itself with Bubblewrap via `execv`. Non-Codex calls preserve their
-arguments. A Codex invocation must have `--argv0 codex-linux-sandbox` before the
-first `--` and a command path ending in `/codex` immediately after it. For those
-calls the wrapper performs the Python shim's workspace normalization, `/dev`
-rewrite, exact `.git` overlay removal, HOME mounts, configuration-file overlays,
-and WSL2 drvfs masking.
-
-`HOME` is required, including for non-Codex calls. `BWRAP_REAL` defaults to
-`/usr/bin/bwrap`; `BWRAP_LOG` defaults to `$HOME/.local/state/bwrap-wrapper.log`;
-and `XDG_CONFIG_HOME` defaults to `$HOME/.config` when unset or empty. Empty
-`BWRAP_REAL` and `BWRAP_LOG` values remain empty, matching the reference.
-
-For Codex calls, `/proc/mounts` is read and parsed for `9p` mounts with the exact
-`aname=drvfs` option. Matching mount points are deduplicated, octal escapes are
-decoded, and tmpfs mounts are inserted before `--`. The configured
-`bwrap-wrapper/cwd` directory contributes its direct regular files, including
-hidden files and symlinks to regular files, in Python filename order. Directory
-entries are read once for the invocation and their mount arguments are inserted
-after each matching workspace bind.
-
-The log records a local ISO 8601 timestamp, user, PID, Codex detection, Bubblewrap
-path, workspace, HOME mount status, quoted arguments, and every environment
-variable in name order. Existing log permissions are retained; new files use the
-startup umask `0077`. Logs can contain secrets from arguments and environment
-values. Protect them and redact before sharing.
-
-## Implementation boundary
-
-The argument transformer takes explicit inputs and stays independent of
-filesystem discovery and process replacement. Mount parsing is separately
-testable with synthetic data. Integration tests use temporary fake executables;
-they do not run Bubblewrap or require mount privileges. WSL2 mount visibility
-has not been tested on a WSL2 host.
+Ported from the Apache-2.0 **bwrap-wrapper** Python project at revision
+`e614a089b80b6f7832edd66950bba8f06abe0040`, supplied in `./python` for comparison.
+The original [Apache-2.0 license](LICENSE) is retained. Python is only needed for
+the optional development comparison, never to run the installed Rust executable.

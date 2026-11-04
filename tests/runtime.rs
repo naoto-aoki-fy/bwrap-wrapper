@@ -1,4 +1,4 @@
-use bwrap_wrapper_rs::{config, mounts, transform};
+use bwrap_wrapper_rs::{config, mounts, runtime, transform};
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output};
@@ -71,8 +71,33 @@ impl Fixture {
             .map(str::to_owned)
             .collect()
     }
-    fn bytes(&self) -> Vec<u8> {
-        std::fs::read(&self.result).unwrap()
+    fn codex_command(&self, args: &[&str]) -> Command {
+        let args_path = self.temp.path("args");
+        let mut encoded = Vec::new();
+        for arg in args {
+            encoded.extend_from_slice(arg.as_bytes());
+            encoded.push(0);
+        }
+        std::fs::write(&args_path, encoded).unwrap();
+        let mounts_path = self.temp.path("mounts");
+        std::fs::write(
+            &mounts_path,
+            "x /mnt/d 9p rw;aname=drvfs\nx /c 9p aname=drvfs\nx /c 9p aname=drvfs\n",
+        )
+        .unwrap();
+        let template = self.command(&[]);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.env_clear();
+        for (key, value) in template.get_envs() {
+            if let Some(value) = value {
+                command.env(key, value);
+            }
+        }
+        command
+            .args(["--exact", "fixture_driver", "--nocapture"])
+            .env("BWRAP_TEST_ARGS", args_path)
+            .env("BWRAP_TEST_MOUNTS", mounts_path);
+        command
     }
 }
 
@@ -109,7 +134,7 @@ fn non_codex_passthrough_logs_before_exec_and_inherits_environment_and_pid() {
         0o600
     );
     assert!(log.starts_with("\n========== BWRAP START ==========\nTimestamp: "));
-    assert!(log.contains("Codex invocation: false\n"));
+    assert!(log.contains("Codex invocation: False\n"));
     assert!(log.contains("Sandbox CWD: (not specified)\n"));
     assert!(log.contains("Original args: --dev /dev 'plain argument' 'it'\"'\"'s quoted' ''\n"));
     assert!(log.contains("FAKE_SECRET=inherited-value\n"));
@@ -160,7 +185,7 @@ fn codex_arguments_are_transformed_and_exit_status_propagates() {
         "/opt/codex",
         "tail arg",
     ];
-    let mut command = fixture.command(&args);
+    let mut command = fixture.codex_command(&args);
     command.env("XDG_CONFIG_HOME", &xdg);
     command.env("FAKE_EXIT", "23");
     let output = command.output().unwrap();
@@ -170,7 +195,7 @@ fn codex_arguments_are_transformed_and_exit_status_propagates() {
     let cwd = std::env::current_dir().unwrap();
     let config_dir = config::directory(home.as_os_str(), Some(xdg.as_os_str()), cwd.as_os_str());
     let config_files = config::files(&config_dir).unwrap();
-    let windows_mounts = mounts::read_proc_mounts().unwrap();
+    let windows_mounts = mounts::read_file(fixture.temp.path("mounts")).unwrap();
     let original = args.map(OsString::from);
     let expected = transform::transform(
         &original,
@@ -188,9 +213,9 @@ fn codex_arguments_are_transformed_and_exit_status_propagates() {
     assert_eq!(&lines[2..lines.len() - 1], expected);
     assert_eq!(lines.last().unwrap(), "LOG=present");
     let log = std::fs::read_to_string(&fixture.log).unwrap();
-    assert!(log.contains("Codex invocation: true\n"));
+    assert!(log.contains("Codex invocation: True\n"));
     assert!(log.contains("Sandbox CWD: /work\n"));
-    assert!(log.contains("Tmpfs inserted: true\n"));
+    assert!(log.contains("Tmpfs inserted: True\n"));
 }
 
 #[test]
@@ -216,6 +241,7 @@ fn missing_home_relative_workspace_and_log_failure_never_execute() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("must be absolute"));
     assert!(!fixture.result.exists());
     assert!(!fixture.log.exists());
+    assert!(fixture.log.parent().unwrap().is_dir());
 
     let blocker = fixture.temp.path("not-a-directory");
     std::fs::write(&blocker, "file").unwrap();
@@ -260,7 +286,7 @@ fn logging_failure_stops_before_attempting_the_default_real_executable() {
         .args(["--", "/bin/true"]);
     let output = command.output().unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to write invocation log"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to prepare invocation log"));
 }
 
 #[test]
@@ -279,21 +305,15 @@ fn empty_bwrap_real_and_log_values_preserve_reference_failure_behavior() {
 }
 
 #[test]
-fn arbitrary_non_utf8_arguments_are_forwarded_without_loss() {
+fn non_utf8_arguments_fail_logging_before_exec_like_python() {
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::new();
     let mut command = fixture.command(&[]);
     command.arg(OsString::from_vec(vec![b'x', 0xff, b'y']));
     let output = command.output().unwrap();
-    assert!(output.status.success());
-    assert!(
-        fixture
-            .bytes()
-            .windows(8)
-            .any(|window| window == b"ARG=x\xffy\n")
-    );
-    let log = std::fs::read(&fixture.log).unwrap();
-    assert!(log.windows(3).any(|window| window == [b'x', 0xff, b'y']));
+    assert!(!output.status.success());
+    assert!(!fixture.result.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("non-UTF-8"));
 }
 
 #[test]
@@ -306,4 +326,155 @@ fn relative_executable_path_uses_execv_without_path_search() {
         .env("PATH", "/does-not-contain-the-executable");
     assert!(command.output().unwrap().status.success());
     assert_eq!(fixture.lines()[2], "ARG=argument");
+}
+
+/// Invoked in a child test process by codex_command and scripts/check_reference.py.
+#[test]
+fn fixture_driver() {
+    use std::os::unix::ffi::OsStringExt;
+    let Some(path) = std::env::var_os("BWRAP_TEST_ARGS") else {
+        return;
+    };
+    let encoded = std::fs::read(path).unwrap();
+    let args = if encoded.is_empty() {
+        Vec::new()
+    } else {
+        assert_eq!(encoded.last(), Some(&0));
+        encoded[..encoded.len() - 1]
+            .split(|b| *b == 0)
+            .map(|arg| OsString::from_vec(arg.to_vec()))
+            .collect::<Vec<_>>()
+    };
+    let mounts = std::env::var_os("BWRAP_TEST_MOUNTS").unwrap();
+    if let Err(error) = runtime::run_with_args(&args, || mounts::read_file(&mounts)) {
+        eprintln!("bwrap-wrapper: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[test]
+fn timestamps_have_iso_offsets_and_python_booleans() {
+    for (timezone, suffix) in [
+        ("UTC0", "+00:00"),
+        ("JST-9", "+09:00"),
+        ("EST5", "-05:00"),
+        ("XST-0:00:30", "+00:00:30"),
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command(&["Unicode: 日本語", "a'b", "line\nbreak"]);
+        command.env("TZ", timezone);
+        assert!(command.output().unwrap().status.success());
+        let log = std::fs::read_to_string(&fixture.log).unwrap();
+        let timestamp = log
+            .lines()
+            .find_map(|line| line.strip_prefix("Timestamp: "))
+            .unwrap();
+        assert!(timestamp.ends_with(suffix), "{timestamp}");
+        assert_eq!(&timestamp[10..11], "T");
+        assert_eq!(&timestamp[19..20], &suffix[..1]);
+        assert!(log.contains("Tmpfs inserted: False\n"));
+    }
+}
+
+#[test]
+fn signal_termination_and_standard_streams_propagate() {
+    use std::os::unix::process::ExitStatusExt;
+    let fixture = Fixture::new();
+    std::fs::write(
+        &fixture.fake,
+        "#!/bin/sh\necho stdout-message\necho stderr-message >&2\nkill -TERM $$\n",
+    )
+    .unwrap();
+    let output = fixture.run(&["--", "/bin/true"]);
+    assert_eq!(output.status.signal(), Some(libc::SIGTERM));
+    assert_eq!(output.stdout, b"stdout-message\n");
+    assert_eq!(output.stderr, b"stderr-message\n");
+}
+
+#[test]
+fn absolute_configuration_home_works_after_cwd_is_deleted() {
+    let fixture = Fixture::new();
+    let deleted = fixture.temp.path("deleted-cwd");
+    std::fs::create_dir(&deleted).unwrap();
+    let driver = fixture.codex_command(&[
+        "--argv0",
+        "codex-linux-sandbox",
+        "--sandbox-policy-cwd=/w",
+        "--bind",
+        "/w",
+        "/w",
+        "--",
+        "/opt/codex",
+    ]);
+    let mut command = Command::new("/bin/sh");
+    command.env_clear();
+    for (key, value) in driver.get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
+    }
+    command.env("BWRAP_TEST_CWD", &deleted)
+        .env("BWRAP_TEST_DRIVER", driver.get_program())
+        .env("XDG_CONFIG_HOME", fixture.temp.path("absolute-config"))
+        .args(["-c", "cd \"$BWRAP_TEST_CWD\" && rmdir \"$BWRAP_TEST_CWD\" && exec \"$BWRAP_TEST_DRIVER\" --exact fixture_driver --nocapture"]);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fixture.result.exists());
+}
+
+#[test]
+fn standard_input_is_inherited() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let fixture = Fixture::new();
+    std::fs::write(
+        &fixture.fake,
+        "#!/bin/sh\nIFS= read -r line\nprintf 'received:%s\\n' \"$line\"\n",
+    )
+    .unwrap();
+    let mut command = fixture.command(&[]);
+    command.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"input with spaces\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"received:input with spaces\n");
+}
+
+#[test]
+fn non_utf8_environment_values_prevent_execution_like_python() {
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = Fixture::new();
+    let mut command = fixture.command(&[]);
+    command.env("INVALID_VALUE", OsString::from_vec(vec![0xff]));
+    assert!(!command.output().unwrap().status.success());
+    assert!(!fixture.result.exists());
+}
+
+#[test]
+fn missing_or_invalid_utf8_mount_tables_stop_before_logging_and_exec() {
+    for invalid_utf8 in [false, true] {
+        let fixture = Fixture::new();
+        let mut command =
+            fixture.codex_command(&["--argv0", "codex-linux-sandbox", "--", "/opt/codex"]);
+        let path = fixture.temp.path("mounts");
+        if invalid_utf8 {
+            std::fs::write(path, [0xff]).unwrap();
+        } else {
+            std::fs::remove_file(path).unwrap();
+        }
+        assert!(!command.output().unwrap().status.success());
+        assert!(!fixture.result.exists());
+        assert!(!fixture.log.exists());
+        assert!(fixture.log.parent().unwrap().is_dir());
+    }
 }

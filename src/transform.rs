@@ -66,7 +66,44 @@ pub fn workspace(args: &[OsString]) -> Result<Option<OsString>, RelativeWorkspac
     Ok(Some(normalized))
 }
 
+#[derive(Debug)]
+pub enum DiscoveryError<E> {
+    Workspace(RelativeWorkspace),
+    Discovery(E),
+}
+
+impl<E: fmt::Display> fmt::Display for DiscoveryError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Workspace(error) => error.fmt(f),
+            Self::Discovery(error) => error.fmt(f),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for DiscoveryError<E> {}
+
 pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, RelativeWorkspace> {
+    match transform_with_discovery(
+        args,
+        inputs.home,
+        || Ok::<_, std::convert::Infallible>(inputs.config_files.to_vec()),
+        || Ok::<_, std::convert::Infallible>(inputs.windows_mounts.to_vec()),
+    ) {
+        Ok(output) => Ok(output),
+        Err(DiscoveryError::Workspace(error)) => Err(error),
+        Err(DiscoveryError::Discovery(never)) => match never {},
+    }
+}
+
+/// Invoke discovery at the same points as Python: after each matching bind and
+/// when the rewrite loop reaches the command separator. Callbacks can be pure fixtures.
+pub fn transform_with_discovery<E>(
+    args: &[OsString],
+    home: &OsStr,
+    mut config_files: impl FnMut() -> Result<Vec<OsString>, E>,
+    mut windows_mounts: impl FnMut() -> Result<Vec<OsString>, E>,
+) -> Result<Output, DiscoveryError<E>> {
     let mut out = Output {
         args: Vec::new(),
         is_codex: is_codex(args),
@@ -77,7 +114,7 @@ pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, Relat
         out.args = args.to_vec();
         return Ok(out);
     }
-    out.workspace = workspace(args)?;
+    out.workspace = workspace(args).map_err(DiscoveryError::Workspace)?;
     let git = out
         .workspace
         .as_deref()
@@ -86,8 +123,8 @@ pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, Relat
     while i < args.len() {
         let arg = &args[i];
         if arg == "--" {
-            for mount in inputs.windows_mounts {
-                out.args.extend(["--tmpfs".into(), mount.clone()]);
+            for mount in windows_mounts().map_err(DiscoveryError::Discovery)? {
+                out.args.extend(["--tmpfs".into(), mount]);
             }
             out.args.extend_from_slice(&args[i..]);
             break;
@@ -115,23 +152,23 @@ pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, Relat
             if matching && !out.home_inserted {
                 out.args.extend([
                     "--tmpfs".into(),
-                    inputs.home.to_owned(),
+                    home.to_owned(),
                     "--dir".into(),
-                    join(inputs.home, OsStr::new(".codex")),
+                    join(home, OsStr::new(".codex")),
                 ]);
                 for (option, suffix) in [
                     ("--ro-bind", ".codex/packages"),
                     ("--bind", ".codex/memories"),
                     ("--ro-bind", ".codex/AGENTS.md"),
                 ] {
-                    let path = join(inputs.home, OsStr::new(suffix));
+                    let path = join(home, OsStr::new(suffix));
                     out.args.extend([option.into(), path.clone(), path]);
                 }
                 out.home_inserted = true;
             }
             out.args.extend_from_slice(&args[i..i + 3]);
             if matching {
-                for source in inputs.config_files {
+                for source in config_files().map_err(DiscoveryError::Discovery)? {
                     let name = source.as_bytes().rsplit(|b| *b == b'/').next().unwrap();
                     let target = join(out.workspace.as_deref().unwrap(), OsStr::from_bytes(name));
                     out.args

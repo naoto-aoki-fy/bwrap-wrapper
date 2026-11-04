@@ -50,114 +50,47 @@ pub fn run() -> Result<(), String> {
     }
     let settings = Settings::from_environment()?;
     let original: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let recognized = transform::is_codex(&original);
+    run_with_mount_reader(&original, mounts::read_proc_mounts, settings)
+}
 
-    let workspace = if recognized {
-        transform::workspace(&original).map_err(|e| e.to_string())?
-    } else {
-        None
-    };
-    let config_files = if recognized && has_workspace_bind(&original, workspace.as_deref()) {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("failed to read current directory: {e}"))?;
-        let directory = config::directory(
-            &settings.home,
-            settings.config_home.as_deref(),
-            cwd.as_os_str(),
-        );
-        config::files(&directory).map_err(|e| format!("failed to read configuration files: {e}"))?
-    } else {
-        Vec::new()
-    };
-    let windows_mounts = if recognized && reaches_command_separator(&original, workspace.as_deref())
-    {
-        mounts::read_proc_mounts().map_err(|e| format!("failed to read /proc/mounts: {e}"))?
-    } else {
-        Vec::new()
-    };
-    let output = transform::transform(
-        &original,
-        &transform::Inputs {
-            home: &settings.home,
-            config_files: &config_files,
-            windows_mounts: &windows_mounts,
-        },
+/// Run the same integration with an explicit mount-table reader. No process-global
+/// test overrides or extra configuration variables are added to the executable.
+pub fn run_with_args(
+    original: &[OsString],
+    mount_reader: impl FnMut() -> io::Result<Vec<OsString>>,
+) -> Result<(), String> {
+    // SAFETY: this is an alternative process entry point, called before filesystem writes.
+    unsafe {
+        libc::umask(0o077);
+    }
+    run_with_mount_reader(original, mount_reader, Settings::from_environment()?)
+}
+
+fn run_with_mount_reader(
+    original: &[OsString],
+    mount_reader: impl FnMut() -> io::Result<Vec<OsString>>,
+    settings: Settings,
+) -> Result<(), String> {
+    let log = logging::InvocationLog::prepare(&settings.log_file)
+        .map_err(|e| format!("failed to prepare invocation log: {e}"))?;
+    let output = transform::transform_with_discovery(
+        original,
+        &settings.home,
+        || config::discover(&settings.home, settings.config_home.as_deref()),
+        mount_reader,
     )
     .map_err(|e| e.to_string())?;
 
     let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     environment.sort_by_cached_key(|(key, _)| config::python_name_sort_key(key));
-    logging::append(
-        &settings.log_file,
-        &settings.real_bwrap,
-        &original,
-        &output,
-        &environment,
-    )
-    .map_err(|e| format!("failed to write invocation log: {e}"))?;
+    log.append(&settings.real_bwrap, original, &output, &environment)
+        .map_err(|e| format!("failed to write invocation log: {e}"))?;
     execv(&settings.real_bwrap, &output.args).map_err(|e| {
         format!(
             "failed to execute {}: {e}",
             settings.real_bwrap.to_string_lossy()
         )
     })
-}
-
-fn reaches_command_separator(args: &[OsString], workspace: Option<&OsStr>) -> bool {
-    let git = workspace.map(|path| crate::paths::join(path, OsStr::new(".git")));
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "--" {
-            return true;
-        }
-        if arg == "--ro-bind"
-            && i + 2 < args.len()
-            && git
-                .as_ref()
-                .is_some_and(|path| args[i + 1] == *path && args[i + 2] == *path)
-        {
-            i += 3;
-        } else if arg == "--dev" && args.get(i + 1).is_some_and(|a| a == "/dev") {
-            i += 2;
-        } else if arg == "--bind" && i + 2 < args.len() {
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-    false
-}
-
-fn has_workspace_bind(args: &[OsString], workspace: Option<&OsStr>) -> bool {
-    let Some(workspace) = workspace else {
-        return false;
-    };
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "--" {
-            return false;
-        }
-        if arg == "--bind" && i + 2 < args.len() {
-            if args[i + 1] == workspace && args[i + 2] == workspace {
-                return true;
-            }
-            i += 3;
-        } else if arg == "--dev" && args.get(i + 1).is_some_and(|a| a == "/dev") {
-            i += 2;
-        } else if arg == "--ro-bind" && i + 2 < args.len() {
-            let git = crate::paths::join(workspace, OsStr::new(".git"));
-            if args[i + 1] == git && args[i + 2] == git {
-                i += 3;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    false
 }
 
 fn execv(path: &OsStr, args: &[OsString]) -> io::Result<()> {
@@ -183,8 +116,7 @@ fn execv(path: &OsStr, args: &[OsString]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Settings, reaches_command_separator};
-    use std::ffi::OsString;
+    use super::Settings;
 
     #[test]
     fn environment_defaults_and_empty_values_match_reference() {
@@ -206,30 +138,5 @@ mod tests {
             settings.config_home.as_deref(),
             Some(std::ffi::OsStr::new(""))
         );
-    }
-
-    #[test]
-    fn mount_discovery_is_skipped_when_an_operand_consumes_separator() {
-        let consumed = [
-            "--argv0",
-            "codex-linux-sandbox",
-            "--bind",
-            "source",
-            "--",
-            "/bin/codex",
-        ]
-        .map(OsString::from);
-        assert!(!reaches_command_separator(&consumed, None));
-
-        let ordinary = [
-            "--argv0",
-            "codex-linux-sandbox",
-            "--dev",
-            "/dev",
-            "--",
-            "/bin/codex",
-        ]
-        .map(OsString::from);
-        assert!(reaches_command_separator(&ordinary, None));
     }
 }
