@@ -1,4 +1,4 @@
-//! Pure translation of the reference's argument scan and rewrite loop.
+//! Reference-compatible rewriting with support for current Codex sandbox helpers.
 use crate::paths::{join, normalize};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -34,17 +34,35 @@ pub fn is_codex(args: &[OsString]) -> bool {
     let Some(separator) = args.iter().position(|a| a == "--") else {
         return false;
     };
-    args[..separator]
-        .windows(2)
-        .any(|p| p[0] == "--argv0" && p[1] == "codex-linux-sandbox")
-        && args.get(separator + 1).is_some_and(|command| {
-            let bytes = command.as_bytes();
-            bytes.contains(&b'/') && bytes.rsplit(|b| *b == b'/').next() == Some(b"codex")
-        })
+    sandbox_helper_args(args).is_some()
+        || args[..separator]
+            .windows(2)
+            .any(|p| p[0] == "--argv0" && p[1] == "codex-linux-sandbox")
+            && args.get(separator + 1).is_some_and(|command| {
+                let bytes = command.as_bytes();
+                bytes.contains(&b'/') && bytes.rsplit(|b| *b == b'/').next() == Some(b"codex")
+            })
 }
 
-/// Scan the entire list, including command arguments, stopping at the first occurrence.
+/// Return only the direct helper options, excluding the nested command tail.
+fn sandbox_helper_args(args: &[OsString]) -> Option<&[OsString]> {
+    let separator = args.iter().position(|a| a == "--")?;
+    // A dangling argv0 consumes the separator as its value, not as a command boundary.
+    if separator > 0 && args[separator - 1] == "--argv0" {
+        return None;
+    }
+    let command = args.get(separator + 1)?;
+    if command.as_bytes().rsplit(|b| *b == b'/').next() != Some(b"codex-linux-sandbox") {
+        return None;
+    }
+    let tail = &args[separator + 2..];
+    let end = tail.iter().position(|a| a == "--").unwrap_or(tail.len());
+    Some(&tail[..end])
+}
+
+/// Legacy calls scan the entire list; current helpers scan only their own options.
 pub fn workspace(args: &[OsString]) -> Result<Option<OsString>, RelativeWorkspace> {
+    let args = sandbox_helper_args(args).unwrap_or(args);
     let mut value = None;
     for (i, arg) in args.iter().enumerate() {
         if arg == "--sandbox-policy-cwd" {

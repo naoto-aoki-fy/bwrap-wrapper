@@ -41,6 +41,27 @@ The Phase 3 audit corrected these differences from the previous Rust phases:
   newline behavior. Discovery callbacks replace duplicated runtime argument scans.
 - Buffered log writes and explicit close-error handling complete before exec.
 
+## Current sandbox helper compatibility extension
+
+In addition to the legacy `--argv0 codex-linux-sandbox -- /path/to/codex`
+format, Rust recognizes `-- /path/to/codex-linux-sandbox` (also a bare helper
+name). The executable must occur immediately after Bubblewrap's first `--`,
+with the exact basename and no trailing slash. Similar names and helper names
+inside shell arguments do not qualify.
+
+For this newer format, workspace options (`--sandbox-policy-cwd PATH` or
+`--sandbox-policy-cwd=PATH`) are read only from the helper's arguments, stopping
+at its nested `--`. Empty or missing values yield no workspace; relative values
+are rejected and absolute paths retain the existing lexical normalization.
+Legacy calls retain their original whole-list workspace scan. Both formats use
+the same mount transformations and preserve the first separator and entire
+command tail verbatim. Logging uses the same recognition and insertion flags.
+
+This is an intentional Rust compatibility extension; the Python reference is
+unchanged. `tests/fixtures/current-sandbox.txt` is a sanitized argument fixture,
+with no captured environment or raw invocation log. Automated tests cover its
+mounts, overlays, command tail, and runtime log fields using fake execution.
+
 ## Test commands
 
 Normal builds and tests need no Python, installed Bubblewrap, host WSL mounts, or

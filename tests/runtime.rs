@@ -478,3 +478,17 @@ fn missing_or_invalid_utf8_mount_tables_stop_before_logging_and_exec() {
         assert!(fixture.log.parent().unwrap().is_dir());
     }
 }
+
+#[test]
+fn current_helper_logs_recognition_and_home_insertion() {
+    let fixture = Fixture::new();
+    let args: Vec<_> = include_str!("fixtures/current-sandbox.txt")
+        .lines()
+        .collect();
+    let output = fixture.codex_command(&args).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let log = std::fs::read_to_string(&fixture.log).unwrap();
+    assert!(log.contains("Codex invocation: True\n"));
+    assert!(log.contains("Sandbox CWD: /work/project\n"));
+    assert!(log.contains("Tmpfs inserted: True\n"));
+}

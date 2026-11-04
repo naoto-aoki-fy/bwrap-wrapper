@@ -620,3 +620,117 @@ fn mount_parsing_handles_nested_paths_python_whitespace_and_cr_lines() {
         ])
     );
 }
+
+fn current_sandbox() -> Vec<OsString> {
+    include_str!("fixtures/current-sandbox.txt")
+        .lines()
+        .map(OsString::from)
+        .collect()
+}
+
+#[test]
+fn current_helper_transforms_mounts_and_preserves_command_tail() {
+    let args = current_sandbox();
+    let out = transform::transform(
+        &args,
+        &Inputs {
+            home: OsStr::new("/home/u"),
+            config_files: &strings(&["/cfg/AGENTS.md"]),
+            windows_mounts: &strings(&["/mnt/c"]),
+        },
+    )
+    .unwrap();
+    assert!(out.is_codex);
+    assert!(out.home_inserted);
+    assert_eq!(out.workspace, Some("/work/project".into()));
+    let mut expected = strings(&["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev"]);
+    expected.extend(home_mounts());
+    expected.extend(strings(&[
+        "--bind",
+        "/work/project",
+        "/work/project",
+        "--ro-bind",
+        "/cfg/AGENTS.md",
+        "/work/project/AGENTS.md",
+        "--ro-bind",
+        "/work/other/.git",
+        "/work/other/.git",
+        "--bind",
+        "/work/project",
+        "/work/project",
+        "--ro-bind",
+        "/cfg/AGENTS.md",
+        "/work/project/AGENTS.md",
+        "--tmpfs",
+        "/mnt/c",
+    ]));
+    let separator = args.iter().position(|a| a == "--").unwrap();
+    expected.extend_from_slice(&args[separator..]);
+    assert_eq!(out.args, expected);
+}
+
+#[test]
+fn current_helper_detection_requires_exact_command_position() {
+    for command in [
+        "codex-linux-sandbox",
+        "./codex-linux-sandbox",
+        "/opt/codex-linux-sandbox",
+    ] {
+        assert!(rewrite(&strings(&["--", command])).is_codex);
+    }
+    for args in [
+        strings(&["/opt/codex-linux-sandbox"]),
+        strings(&["--"]),
+        strings(&["--", ""]),
+        strings(&["--", "/opt/codex-linux-sandbox/"]),
+        strings(&["--", "/opt/codex-linux-sandbox-other"]),
+        strings(&[
+            "--",
+            "/bin/sh",
+            "-c",
+            "codex-linux-sandbox",
+            "--sandbox-policy-cwd=relative",
+        ]),
+        strings(&["--", "--", "/opt/codex-linux-sandbox"]),
+    ] {
+        let out = rewrite(&args);
+        assert!(!out.is_codex, "{args:?}");
+        assert_eq!(out.args, args);
+    }
+}
+
+#[test]
+fn current_helper_workspace_is_bounded_by_nested_separator() {
+    for options in [
+        vec![],
+        vec!["--sandbox-policy-cwd"],
+        vec!["--sandbox-policy-cwd="],
+        vec!["--sandbox-policy-cwd", ""],
+    ] {
+        let mut args = strings(&["--", "/opt/codex-linux-sandbox"]);
+        args.extend(strings(&options));
+        args.extend(strings(&["--", "/bin/sh", "--sandbox-policy-cwd=/wrong"]));
+        let out = rewrite(&args);
+        assert_eq!(out.workspace, None);
+        assert!(!out.home_inserted);
+        assert_eq!(out.args, args);
+    }
+    for option in [
+        "--sandbox-policy-cwd=/work/a/../project",
+        "--sandbox-policy-cwd=//work/project",
+    ] {
+        let args = strings(&["--", "/opt/codex-linux-sandbox", option]);
+        assert!(rewrite(&args).workspace.is_some());
+    }
+    for options in [
+        vec!["--sandbox-policy-cwd=relative"],
+        vec!["--sandbox-policy-cwd", "relative"],
+    ] {
+        let mut args = strings(&["--", "/opt/codex-linux-sandbox"]);
+        args.extend(strings(&options));
+        assert_eq!(
+            transform::workspace(&args),
+            Err(transform::RelativeWorkspace)
+        );
+    }
+}

@@ -178,6 +178,8 @@ fn local_timestamp() -> io::Result<String> {
             seconds / 3600,
             (seconds / 60) % 60
         ));
+        // Keep compatibility with Rust 1.85, which predates is_multiple_of().
+        #[allow(clippy::manual_is_multiple_of)]
         if seconds % 60 != 0 {
             timestamp.push_str(&format!(":{:02}", seconds % 60));
         }
