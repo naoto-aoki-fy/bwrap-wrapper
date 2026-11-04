@@ -33,13 +33,13 @@ fn home_mounts() -> Vec<OsString> {
         "/home/u",
         "--dir",
         "/home/u/.codex",
-        "--ro-bind",
+        "--ro-bind-try",
         "/home/u/.codex/packages",
         "/home/u/.codex/packages",
-        "--bind",
+        "--bind-try",
         "/home/u/.codex/memories",
         "/home/u/.codex/memories",
-        "--ro-bind",
+        "--ro-bind-try",
         "/home/u/.codex/AGENTS.md",
         "/home/u/.codex/AGENTS.md",
     ])
@@ -732,5 +732,51 @@ fn current_helper_workspace_is_bounded_by_nested_separator() {
             transform::workspace(&args),
             Err(transform::RelativeWorkspace)
         );
+    }
+}
+
+#[test]
+fn optional_home_mounts_do_not_depend_on_source_presence_or_create_sources() {
+    for present in 0..8 {
+        let temp = TempDir::new();
+        let home = temp.0.join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        for (bit, suffix) in [(1, "packages"), (2, "memories"), (4, "AGENTS.md")] {
+            if present & bit != 0 {
+                let path = home.join(".codex").join(suffix);
+                if bit == 4 {
+                    std::fs::write(path, "agents").unwrap();
+                } else {
+                    std::fs::create_dir(path).unwrap();
+                }
+            }
+        }
+        let args = codex(&["--sandbox-policy-cwd=/w", "--bind", "/w", "/w"], &[]);
+        let output = transform::transform(
+            &args,
+            &Inputs {
+                home: home.as_os_str(),
+                config_files: &[],
+                windows_mounts: &[],
+            },
+        )
+        .unwrap();
+        let expected = home_mounts()
+            .into_iter()
+            .map(|arg| {
+                OsString::from(
+                    arg.to_str()
+                        .unwrap()
+                        .replace("/home/u", home.to_str().unwrap()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(&output.args[3..16], expected);
+        for (bit, suffix) in [(1, "packages"), (2, "memories"), (4, "AGENTS.md")] {
+            assert_eq!(
+                home.join(".codex").join(suffix).exists(),
+                present & bit != 0
+            );
+        }
     }
 }

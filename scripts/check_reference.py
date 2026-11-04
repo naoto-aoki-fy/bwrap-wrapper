@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,25 @@ def fixture_binary():
         if message.get("target", {}).get("name") == "runtime" and message.get("executable"):
             return message["executable"]
     raise RuntimeError("Cargo did not report the runtime test executable")
+
+
+def normalize_optional_mounts(forwarded, log, home):
+    """Map only the exact inserted HOME sequence back to the reference policy."""
+    old = ["--tmpfs", home, "--dir", os.path.join(home, ".codex")]
+    new = list(old)
+    for option, suffix in [("--ro-bind", "packages"), ("--bind", "memories"), ("--ro-bind", "AGENTS.md")]:
+        path = os.path.join(home, ".codex", suffix)
+        old.extend([option, path, path])
+        new.extend([option + "-try", path, path])
+    def encoded(args):
+        return b"".join(os.fsencode(arg) + b"\0" for arg in args)
+    if forwarded is not None:
+        forwarded = forwarded.replace(encoded(new), encoded(old), 1)
+    if log is not None:
+        prefix = "Modified args: "
+        log = [prefix + line[len(prefix):].replace(shlex.join(new), shlex.join(old), 1)
+               if line.startswith(prefix) else line for line in log]
+    return forwarded, log
 
 
 def main():
@@ -146,10 +166,13 @@ def main():
                 if outcome.returncode == 0:
                     normalized_log = [line for line in log.read_text().splitlines()
                                       if not line.startswith(("Timestamp: ", "PID: "))]
+                if not observed:
+                    forwarded, normalized_log = normalize_optional_mounts(
+                        forwarded, normalized_log, environment_case.get("HOME", ""))
                 observed.append((outcome.returncode == 0, forwarded, normalized_log))
             if observed[0] != observed[1]:
                 raise AssertionError(f"Case {index}: {arguments!r}\nRust: {observed[0]!r}\nPython: {observed[1]!r}")
-    print(f"{len(cases)} cases matched: status, forwarded bytes, and complete logs (except timestamp/PID)")
+    print(f"{len(cases)} cases matched after documented optional-HOME-mount normalization: status, forwarded bytes, and complete logs (except timestamp/PID)")
 
 
 if __name__ == "__main__":

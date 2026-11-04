@@ -16,7 +16,18 @@ under a temporary directory; the child receives a cleared environment. No real
 Codex profile or credentials are used. The sandbox root is read-only; writable
 binds point only at fixture directories. Fixture files are removed afterwards.
 
-## Results
+## Optional-source regression matrix
+
+The suite now runs all eight presence combinations of packages, memories, and
+AGENTS.md across both invocation formats and both workspace locations (32 cases).
+The executable fixture lives outside HOME so absent packages cannot hide it.
+It checks skipped paths, host non-creation, existing contents and permissions,
+and the isolation checks below. Bubblewrap 0.12.0 advertises both try options.
+On the current restricted runner, the real suite is blocked by
+`Creating new namespace failed: Operation not permitted`; the expanded matrix
+requires a namespace-capable host. The earlier results below predate this change.
+
+## Previous results
 
 On this checkout's Linux host, `/usr/bin/bwrap` executed successfully. The
 ignored integration test passed all four combinations: legacy/current helper
@@ -40,7 +51,7 @@ format and workspace outside/inside HOME. Each invocation begins with
 The Python branch's `bwrap_shim.py` was inspected directly: its HOME sequence is
 tmpfs, `.codex` directory, packages read-only, memories writable, AGENTS.md
 read-only, followed by the original workspace bind. The Rust mount order and
-allowlist match this policy. No mount policy change was made.
+allowlist match this policy. The optional-source extension preserves this access policy.
 
 ## Confirmed runtime compatibility limitation
 

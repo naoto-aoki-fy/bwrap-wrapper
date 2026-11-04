@@ -40,8 +40,8 @@ signal termination by replacing the process. Execution failure exits nonzero.
 | `XDG_CONFIG_HOME` | `$HOME/.config` | Uses `$HOME/.config` |
 
 There is no separate settings file. No missing mount source is automatically
-created. When HOME mounts are inserted, the packages, memories, and AGENTS.md
-sources described below must exist for real Bubblewrap to mount them.
+created. Missing optional packages, memories, and AGENTS.md sources are skipped by
+Bubblewrap; existing sources keep their documented permissions.
 
 ## Codex invocation detection and workspace
 
@@ -76,9 +76,9 @@ Only recognized Codex calls receive these changes before the command separator:
   ```text
   --tmpfs HOME
   --dir HOME/.codex
-  --ro-bind HOME/.codex/packages HOME/.codex/packages
-  --bind HOME/.codex/memories HOME/.codex/memories
-  --ro-bind HOME/.codex/AGENTS.md HOME/.codex/AGENTS.md
+  --ro-bind-try HOME/.codex/packages HOME/.codex/packages
+  --bind-try HOME/.codex/memories HOME/.codex/memories
+  --ro-bind-try HOME/.codex/AGENTS.md HOME/.codex/AGENTS.md
   ```
 
   This happens once. Each original workspace bind remains. Without a matching
@@ -101,8 +101,8 @@ Only recognized Codex calls receive these changes before the command separator:
 
 These changes expose the host's `/dev`, remove the workspace `.git` read-only
 overlay, hide HOME behind tmpfs with selected Codex paths re-exposed, make Codex
-memories writable, and overlay detected Windows-drive mounts. They reproduce the
-reference's policy. No additional filtering or mount validation is applied.
+memories writable, and overlay detected Windows-drive mounts. They preserve the
+reference's access policy, with optional missing sources tolerated. No additional filtering or mount validation is applied.
 
 The rewrite loop retains the reference's malformed-option behavior. For example,
 `--bind SOURCE --` consumes the separator as a destination; a consumed separator
@@ -149,3 +149,8 @@ See the [audit](compatibility.md) for validation boundaries and diagnostic detai
 
 See [real mount isolation results](isolation.md) for verified permissions and
 the confirmed startup limitation for helpers under `.codex/tmp`.
+
+Optional HOME mounts require Bubblewrap with `--bind-try` and `--ro-bind-try`
+support (confirmed in the installed 0.12.0 `--help`). No older version range
+has been validated. Check the real binary's `--help` when deploying elsewhere.
+Only missing sources are skipped; other mount errors still fail startup.

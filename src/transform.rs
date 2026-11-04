@@ -175,9 +175,9 @@ pub fn transform_with_discovery<E>(
                     join(home, OsStr::new(".codex")),
                 ]);
                 for (option, suffix) in [
-                    ("--ro-bind", ".codex/packages"),
-                    ("--bind", ".codex/memories"),
-                    ("--ro-bind", ".codex/AGENTS.md"),
+                    ("--ro-bind-try", ".codex/packages"),
+                    ("--bind-try", ".codex/memories"),
+                    ("--ro-bind-try", ".codex/AGENTS.md"),
                 ] {
                     let path = join(home, OsStr::new(suffix));
                     out.args.extend([option.into(), path.clone(), path]);

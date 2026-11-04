@@ -14,9 +14,9 @@ impl Drop for Fixture {
 fn push(args: &mut Vec<OsString>, values: &[&OsStr]) {
     args.extend(values.iter().map(|v| v.to_os_string()));
 }
-fn run_case(nested: bool, legacy: bool) {
+fn run_case(nested: bool, legacy: bool, present: u8) {
     let root = std::env::temp_dir().join(format!(
-        "bwrap-isolation-{}-{nested}-{legacy}",
+        "bwrap-isolation-{}-{nested}-{legacy}-{present}",
         std::process::id()
     ));
     std::fs::create_dir(&root).unwrap();
@@ -49,13 +49,23 @@ fn run_case(nested: bool, legacy: bool) {
     ] {
         std::fs::write(path, contents).unwrap();
     }
-    let helper = home.join(".codex/packages").join(if legacy {
+    let helper = root.join(if legacy {
         "codex"
     } else {
         "codex-linux-sandbox"
     });
     std::fs::write(&helper, "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = -- ]; then shift; exec \"$@\"; fi; shift; done\nexit 99\n").unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (bit, suffix) in [(1, "packages"), (2, "memories"), (4, "AGENTS.md")] {
+        if present & bit == 0 {
+            let path = home.join(".codex").join(suffix);
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+    }
     let mut args: Vec<OsString> = ["--ro-bind", "/", "/", "--dev", "/dev"]
         .map(Into::into)
         .to_vec();
@@ -102,12 +112,24 @@ fail() { echo "$*" >&2; exit 1; }
 [ ! -e "$HOME/private" ] || fail private-visible
 [ ! -e "$HOME/.codex/shell_snapshots/snapshot.sh" ] || fail snapshot-visible
 [ "$(stat -f -c %T "$HOME")" = tmpfs ] || fail home-not-tmpfs
-[ "$(cat "$HOME/.codex/packages/data")" = package ]
-[ "$(cat "$HOME/.codex/AGENTS.md")" = agents ]
-[ "$(cat "$HOME/.codex/memories/data")" = memory ]
-printf updated > "$HOME/.codex/memories/data"
-if (printf bad > "$HOME/.codex/packages/data") 2>/dev/null; then fail package-writable; fi
-if (printf bad > "$HOME/.codex/AGENTS.md") 2>/dev/null; then fail agents-writable; fi
+if [ "$PACKAGES" = 1 ]; then
+    [ "$(cat "$HOME/.codex/packages/data")" = package ]
+    if (printf bad > "$HOME/.codex/packages/data") 2>/dev/null; then fail package-writable; fi
+else
+    [ ! -e "$HOME/.codex/packages" ] || fail missing-packages-visible
+fi
+if [ "$AGENTS" = 1 ]; then
+    [ "$(cat "$HOME/.codex/AGENTS.md")" = agents ]
+    if (printf bad > "$HOME/.codex/AGENTS.md") 2>/dev/null; then fail agents-writable; fi
+else
+    [ ! -e "$HOME/.codex/AGENTS.md" ] || fail missing-agents-visible
+fi
+if [ "$MEMORIES" = 1 ]; then
+    [ "$(cat "$HOME/.codex/memories/data")" = memory ]
+    printf updated > "$HOME/.codex/memories/data"
+else
+    [ ! -e "$HOME/.codex/memories" ] || fail missing-memories-visible
+fi
 printf workspace > "$WORKSPACE/new"
 [ "$(cat "$WORKSPACE/.git/config")" = git ]
 printf updated > "$WORKSPACE/.git/config"
@@ -165,6 +187,9 @@ echo isolation-ok
         .env("HOME", &home)
         .env("WORKSPACE", &workspace)
         .env("OTHER", &other)
+        .env("PACKAGES", (present & 1).to_string())
+        .env("MEMORIES", ((present >> 1) & 1).to_string())
+        .env("AGENTS", ((present >> 2) & 1).to_string())
         .output()
         .expect("real Bubblewrap unavailable");
     assert!(
@@ -174,10 +199,24 @@ echo isolation-ok
     assert_eq!(result.stdout, b"isolation-ok\n");
     assert_eq!(std::fs::read(workspace.join("new")).unwrap(), b"workspace");
     assert_eq!(std::fs::read(git.join("config")).unwrap(), b"updated");
-    assert_eq!(
-        std::fs::read(home.join(".codex/memories/data")).unwrap(),
-        b"updated"
-    );
+    for (bit, suffix, contents) in [
+        (1, "packages/data", "package"),
+        (2, "memories/data", "updated"),
+        (4, "AGENTS.md", "agents"),
+    ] {
+        if present & bit != 0 {
+            assert_eq!(
+                std::fs::read(home.join(".codex").join(suffix)).unwrap(),
+                contents.as_bytes()
+            );
+        } else {
+            let source = suffix.split('/').next().unwrap();
+            assert!(
+                !home.join(".codex").join(source).exists(),
+                "host source created"
+            );
+        }
+    }
     assert_eq!(std::fs::read(home.join("private")).unwrap(), b"private");
 }
 
@@ -186,7 +225,9 @@ echo isolation-ok
 fn real_bubblewrap_mount_isolation() {
     for nested in [false, true] {
         for legacy in [false, true] {
-            run_case(nested, legacy);
+            for present in 0..8 {
+                run_case(nested, legacy, present);
+            }
         }
     }
 }

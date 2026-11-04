@@ -62,6 +62,16 @@ unchanged. `tests/fixtures/current-sandbox.txt` is a sanitized argument fixture,
 with no captured environment or raw invocation log. Automated tests cover its
 mounts, overlays, command tail, and runtime log fields using fake execution.
 
+## Optional Codex sources
+
+Rust intentionally uses `--ro-bind-try` for packages and AGENTS.md and
+`--bind-try` for memories. Python uses mandatory binds. Order, destinations,
+HOME tmpfs, and permissions are preserved, while absent sources are skipped
+without host creation. The differential checker normalizes only this exact
+inserted HOME sequence in Rust forwarded arguments and the Modified args log;
+all other arguments, logs, and outcomes remain compared. The reference checkout
+is unchanged. Real mount behavior is covered by the opt-in isolation suite.
+
 ## Test commands
 
 Normal builds and tests need no Python, installed Bubblewrap, host WSL mounts, or
@@ -100,7 +110,19 @@ symlinks, missing/empty/relative configuration homes, redundant path separators,
 empty HOME, invalid UTF-8 arguments, and execution/logging failures. Randomized
 cases use a fixed seed. Only fixture environment variables are logged.
 
-## Results in this checkout
+## Optional-source validation on this runner
+
+- Formatting, ordinary tests (43 passed; one real isolation test ignored), and
+  release build passed with Rust 1.85.1.
+- Strict Clippy is blocked by the existing `clippy::manual_is_multiple_of`
+  allowance in `src/logging.rs`, unknown to installed Clippy 1.85.1. Running with
+  `-D warnings -A unknown-lints` passed; the unrelated source was left unchanged.
+- The real isolation suite was attempted but namespace creation is denied.
+- The Python comparison could not run because `python/bwrap_shim.py` is absent.
+- Matching rustfmt and Clippy binaries under `/tmp` supplied the missing Cargo
+  subcommands, without changing the project toolchain.
+
+## Previous audit results
 
 Verified on Linux with rustc/Cargo 1.85.1 and CPython 3.13.5:
 
