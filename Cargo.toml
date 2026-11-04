@@ -1,0 +1,10 @@
+[package]
+name = "bwrap-wrapper-rs"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Compatibility-focused Rust port of the Codex bubblewrap shim"
+
+[[bin]]
+name = "bwrap"
+path = "src/main.rs"
