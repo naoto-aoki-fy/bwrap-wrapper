@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep tag selection and publication serialized across automatic and manual runs.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C linker=musl-gcc -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install musl and Rust target
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          rustup toolchain install stable --profile minimal
+          rustup target add --toolchain stable '${{ matrix.target }}'
+      - name: Test
+        run: cargo +stable test --locked --target '${{ matrix.target }}'
+      - name: Build
+        run: cargo +stable build --locked --release --target '${{ matrix.target }}'
+      - name: Package
+        run: |
+          binary='target/${{ matrix.target }}/release/bwrap'
+          readelf --program-headers "$binary" > program-headers.txt
+          if grep -q INTERP program-headers.txt; then
+            echo 'Expected a statically linked musl binary' >&2
+            exit 1
+          fi
+          mkdir -p package dist
+          install -m755 "$binary" package/bwrap
+          cp LICENSE README.md package/
+          cp -r docs package/
+          tar -C package -czf 'dist/bwrap-${{ matrix.target }}.tar.gz' .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bwrap-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bwrap-*
+          merge-multiple: true
+          path: dist
+      - name: Select next version
+        id: version
+        run: |
+          git fetch --tags origin
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          pattern = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+          versions = [tuple(map(int, match.groups())) for tag in tags
+                      if (match := pattern.fullmatch(tag))]
+          major, minor, patch = max(versions, default=(0, 0, 0))
+          tag = f"v{major}.{minor}.{patch + 1}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+          print(f"Next release: {tag}")
+          PY
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cd dist
+          sha256sum bwrap-x86_64-unknown-linux-musl.tar.gz bwrap-aarch64-unknown-linux-musl.tar.gz > SHA256SUMS
+          cd ..
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag --title "$TAG" --generate-notes

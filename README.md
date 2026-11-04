@@ -20,6 +20,7 @@ Always point `BWRAP_REAL` at the original executable to avoid recursion.
 
 - [Usage, environment variables, mount behavior, and logging](docs/usage.md)
 - [Safe smoke test using a fake executable](docs/smoke-test.md)
+- [Automated releases and musl binaries](docs/releases.md)
 - [Compatibility audit, tests, project structure, and limitations](docs/compatibility.md)
 
 Ported from the Apache-2.0 **bwrap-wrapper** Python project at revision
