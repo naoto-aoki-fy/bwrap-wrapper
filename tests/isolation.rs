@@ -49,6 +49,8 @@ fn run_case(nested: bool, legacy: bool, present: u8) {
     ] {
         std::fs::write(path, contents).unwrap();
     }
+    std::fs::create_dir_all(home.join(".codex/tmp")).unwrap();
+    std::fs::write(home.join(".codex/tmp/unrelated"), "secret").unwrap();
     let helper = root.join(if legacy {
         "codex"
     } else {
@@ -109,6 +111,11 @@ fn run_case(nested: bool, legacy: bool, present: u8) {
     );
     args.push(r#"
 fail() { echo "$*" >&2; exit 1; }
+[ ! -e "$HOME/.codex/tmp/unrelated" ] || fail unrelated-tmp-visible
+if [ -e "$GENERATED/codex-linux-sandbox" ]; then
+    [ -L "$GENERATED/codex-linux-sandbox" ] || fail helper-not-symlink
+    if (touch "$GENERATED/new") 2>/dev/null; then fail helper-directory-writable; fi
+fi
 [ ! -e "$HOME/private" ] || fail private-visible
 [ ! -e "$HOME/.codex/shell_snapshots/snapshot.sh" ] || fail snapshot-visible
 [ "$(stat -f -c %T "$HOME")" = tmpfs ] || fail home-not-tmpfs
@@ -162,24 +169,27 @@ echo isolation-ok
         Path::new(&bwrap).is_absolute(),
         "use the absolute real Bubblewrap path"
     );
-    // The observed current runtime launches its helper from .codex/tmp.
-    // Demonstrate that this path is hidden, rather than expanding the allowlist.
-    let hidden_helper = home.join(".codex/tmp/arg0-linux/example/codex-linux-sandbox");
-    std::fs::create_dir_all(hidden_helper.parent().unwrap()).unwrap();
-    std::fs::copy(&helper, &hidden_helper).unwrap();
-    let mut hidden_args = output.args.clone();
-    let separator = hidden_args.iter().position(|a| a == "--").unwrap();
-    hidden_args[separator + 1] = hidden_helper.into_os_string();
-    let hidden_result = Command::new(&bwrap)
-        .args(hidden_args)
-        .env_clear()
-        .output()
+    // Exercise the original generated path and its packages symlink target.
+    let mut output = output;
+    let generated = home.join(".codex/tmp/arg0-linux/codex-arg0Synthetic");
+    if !legacy && present & 1 != 0 {
+        std::fs::create_dir_all(&generated).unwrap();
+        let target = home.join(".codex/packages/codex");
+        std::fs::copy(&helper, &target).unwrap();
+        let link = generated.join("codex-linux-sandbox");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let separator = args.iter().position(|a| a == "--").unwrap();
+        args[separator + 1] = link.into_os_string();
+        output = transform::transform(
+            &args,
+            &Inputs {
+                home: home.as_os_str(),
+                config_files: &[config_dir.join("overlay").into_os_string()],
+                windows_mounts: &[],
+            },
+        )
         .unwrap();
-    assert!(!hidden_result.status.success());
-    assert!(
-        String::from_utf8_lossy(&hidden_result.stderr).contains("No such file or directory"),
-        "{hidden_result:?}"
-    );
+    }
     let result = Command::new(bwrap)
         .args(output.args)
         .env_clear()
@@ -187,6 +197,7 @@ echo isolation-ok
         .env("HOME", &home)
         .env("WORKSPACE", &workspace)
         .env("OTHER", &other)
+        .env("GENERATED", &generated)
         .env("PACKAGES", (present & 1).to_string())
         .env("MEMORIES", ((present >> 1) & 1).to_string())
         .env("AGENTS", ((present >> 2) & 1).to_string())

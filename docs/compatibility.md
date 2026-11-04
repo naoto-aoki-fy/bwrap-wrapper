@@ -162,7 +162,7 @@ project or system toolchain change is required by the implementation.
   execution demonstrate argument construction and process behavior, not actual
   mount isolation. Ordinary tests do not run real Bubblewrap. The separate opt-in
   [isolation suite](isolation.md) has verified synthetic mounts on this Linux
-  host and records a helper startup incompatibility.
+  host; it now covers generated helper symlinks under HOME isolation.
 
 ## Project structure
 

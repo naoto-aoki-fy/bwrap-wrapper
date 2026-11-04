@@ -148,7 +148,7 @@ exec all stop with a nonzero status. There is no fallback to unmodified argument
 See the [audit](compatibility.md) for validation boundaries and diagnostic details.
 
 See [real mount isolation results](isolation.md) for verified permissions and
-the confirmed startup limitation for helpers under `.codex/tmp`.
+the narrow read-only mount for generated helpers under `.codex/tmp/arg0-linux`.
 
 Optional HOME mounts require Bubblewrap with `--bind-try` and `--ro-bind-try`
 support (confirmed in the installed 0.12.0 `--help`). No older version range

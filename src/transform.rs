@@ -60,6 +60,33 @@ fn sandbox_helper_args(args: &[OsString]) -> Option<&[OsString]> {
     Some(&tail[..end])
 }
 
+/// Match the original command path, never its symlink target. Reject noncanonical
+/// spellings rather than normalizing traversal into an allowed source.
+fn helper_directory<'a>(args: &'a [OsString], home: &OsStr) -> Option<&'a OsStr> {
+    sandbox_helper_args(args)?;
+    let home_bytes = home.as_bytes();
+    if !home_bytes.starts_with(b"/")
+        || home_bytes
+            .split(|b| *b == b'/')
+            .skip(1)
+            .any(|p| p.is_empty() || p == b"." || p == b"..")
+    {
+        return None;
+    }
+    let separator = args.iter().position(|a| a == "--")?;
+    let command = args.get(separator + 1)?.as_bytes();
+    let prefix = join(home, OsStr::new(".codex/tmp/arg0-linux/"));
+    let tail = command.strip_prefix(prefix.as_bytes())?;
+    let directory = tail.strip_suffix(b"/codex-linux-sandbox")?;
+    if directory.is_empty() || directory == b"." || directory == b".." || directory.contains(&b'/')
+    {
+        return None;
+    }
+    Some(OsStr::from_bytes(
+        &command[..command.len() - b"/codex-linux-sandbox".len()],
+    ))
+}
+
 /// Legacy calls scan the entire list; current helpers scan only their own options.
 pub fn workspace(args: &[OsString]) -> Result<Option<OsString>, RelativeWorkspace> {
     let args = sandbox_helper_args(args).unwrap_or(args);
@@ -181,6 +208,17 @@ pub fn transform_with_discovery<E>(
                 ] {
                     let path = join(home, OsStr::new(suffix));
                     out.args.extend([option.into(), path.clone(), path]);
+                }
+                if let Some(directory) = helper_directory(args, home) {
+                    for suffix in [".codex/tmp", ".codex/tmp/arg0-linux"] {
+                        out.args
+                            .extend(["--dir".into(), join(home, OsStr::new(suffix))]);
+                    }
+                    out.args.extend([
+                        "--ro-bind".into(),
+                        directory.to_owned(),
+                        directory.to_owned(),
+                    ]);
                 }
                 out.home_inserted = true;
             }

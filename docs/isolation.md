@@ -20,12 +20,23 @@ binds point only at fixture directories. Fixture files are removed afterwards.
 
 The suite now runs all eight presence combinations of packages, memories, and
 AGENTS.md across both invocation formats and both workspace locations (32 cases).
-The executable fixture lives outside HOME so absent packages cannot hide it.
+When packages are absent, the executable fixture lives outside HOME so absent
+packages cannot hide it.
 It checks skipped paths, host non-creation, existing contents and permissions,
 and the isolation checks below. Bubblewrap 0.12.0 advertises both try options.
 On the current restricted runner, the real suite is blocked by
 `Creating new namespace failed: Operation not permitted`; the expanded matrix
 requires a namespace-capable host. The earlier results below predate this change.
+
+## Generated-helper validation on this runner
+
+Ordinary tests pass (45 tests; the real isolation test is ignored by default).
+Formatting and Clippy pass using the matching tools under /tmp; Clippy requires
+`-A unknown-lints` for an existing allowance unsupported by this toolchain.
+The real isolation suite was attempted and stopped at its first case with
+`Creating new namespace failed: Operation not permitted`. Consequently the
+updated symlink execution and read-only isolation checks require a
+namespace-capable host; they have not been verified here.
 
 ## Previous results
 
@@ -45,30 +56,40 @@ format and workspace outside/inside HOME. Each invocation begins with
 - A synthetic helper in the allowed packages directory starts and executes the
   nested shell command successfully.
 - Loading a shell snapshot from HOME fails because the snapshot is hidden.
-- Executing a helper at `.codex/tmp/arg0-linux/example/codex-linux-sandbox`
-  fails with `No such file or directory` after HOME isolation.
+## Generated helper directories
 
-The Python branch's `bwrap_shim.py` was inspected directly: its HOME sequence is
-tmpfs, `.codex` directory, packages read-only, memories writable, AGENTS.md
-read-only, followed by the original workspace bind. The Rust mount order and
-allowlist match this policy. The optional-source extension preserves this access policy.
+For a current helper command exactly at
+`HOME/.codex/tmp/arg0-linux/<directory>/codex-linux-sandbox`, HOME isolation
+adds this sequence after the existing packages, memories, and AGENTS.md mounts
+and before the workspace bind:
 
-## Confirmed runtime compatibility limitation
+```text
+--dir HOME/.codex/tmp
+--dir HOME/.codex/tmp/arg0-linux
+--ro-bind HOME/.codex/tmp/arg0-linux/<directory> HOME/.codex/tmp/arg0-linux/<directory>
+```
 
-The observed new invocation launches its helper from `.codex/tmp`. That helper
-is hidden by the existing HOME tmpfs, so recognizing the invocation and inserting
-the reference mounts can prevent startup. Shell snapshots outside the allowed
-paths are also hidden; a command that requires one fails. These failures are
-reproduced with synthetic files and real Bubblewrap, not an installed Codex
-session. Full Codex startup and execution remain unverified.
+The parent directories are empty sandbox directories. Only the immediate helper
+directory is exposed, read-only, including any siblings inside that directory.
+Other generated directories and unrelated tmp files remain hidden. No host
+files are created or changed. The command path is preserved, so a helper symlink
+can resolve into the existing read-only packages mount.
 
-Exposing `.codex/tmp` or shell snapshots would expand access to host runtime
-files. Binding the whole directories could expose unrelated sessions' artifacts;
-snapshots may contain environment data. A future change should establish which
-specific files are required, choose the smallest mounts and permissions, and
-review their lifetimes before expanding access. This verification deliberately
-retains the requested Python policy and records the incompatibility instead of
-silently widening it.
+The matcher rejects dot components, traversal, extra nesting, empty directory
+names, and paths outside this exact HOME prefix. It does not resolve the helper
+symlink. Missing sources fail at the mandatory read-only bind; missing executables
+or inaccessible symlink targets fail at execution, without a broader fallback.
+As with existing mounts, source directories are trusted host paths; concurrent
+host replacement and symlinked source ancestors are not prevented by lexical
+validation. Legacy calls and calls without HOME isolation receive no helper mount.
+
+The integration matrix now executes a synthetic symlink from a generated helper
+directory whenever packages are present in the current invocation format. It
+checks that the directory rejects writes and unrelated tmp content remains
+hidden. Cases with absent packages retain an external helper fixture.
+
+Shell snapshots remain hidden. Full installed Codex execution still requires
+target-host validation.
 
 Later explicit binds of HOME or a HOME ancestor can reveal its contents again;
 the wrapper preserves original binds and does not enforce an allowlist over

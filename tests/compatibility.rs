@@ -646,6 +646,15 @@ fn current_helper_transforms_mounts_and_preserves_command_tail() {
     let mut expected = strings(&["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev"]);
     expected.extend(home_mounts());
     expected.extend(strings(&[
+        "--dir",
+        "/home/u/.codex/tmp",
+        "--dir",
+        "/home/u/.codex/tmp/arg0-linux",
+        "--ro-bind",
+        "/home/u/.codex/tmp/arg0-linux/example",
+        "/home/u/.codex/tmp/arg0-linux/example",
+    ]));
+    expected.extend(strings(&[
         "--bind",
         "/work/project",
         "/work/project",
@@ -779,4 +788,66 @@ fn optional_home_mounts_do_not_depend_on_source_presence_or_create_sources() {
             );
         }
     }
+}
+
+#[test]
+fn generated_helper_mount_is_narrow_and_ordered() {
+    for name in ["codex-arg0gX9c7R", "another-generated-name"] {
+        let dir = format!("/home/u/.codex/tmp/arg0-linux/{name}");
+        let helper = format!("{dir}/codex-linux-sandbox");
+        let args = strings(&[
+            "--bind",
+            "/work",
+            "/work",
+            "--",
+            &helper,
+            "--sandbox-policy-cwd",
+            "/work",
+        ]);
+        let out = rewrite(&args);
+        let mut expected = home_mounts();
+        expected.extend(strings(&[
+            "--dir",
+            "/home/u/.codex/tmp",
+            "--dir",
+            "/home/u/.codex/tmp/arg0-linux",
+            "--ro-bind",
+            &dir,
+            &dir,
+        ]));
+        expected.extend(args.clone());
+        assert_eq!(out.args, expected);
+        let no_isolation = rewrite(&args[3..]);
+        assert_eq!(no_isolation.args, args[3..]);
+    }
+}
+
+#[test]
+fn unexpected_helper_paths_never_add_directory_access() {
+    for helper in [
+        "codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux/codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux/./codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux/../codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux/a/../b/codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux//codex-linux-sandbox",
+        "/home/u/.codex/tmp/arg0-linux/a/b/codex-linux-sandbox",
+        "/home/other/.codex/tmp/arg0-linux/a/codex-linux-sandbox",
+        "/home/u/.codex/tmp/other/a/codex-linux-sandbox",
+    ] {
+        let args = strings(&[
+            "--bind",
+            "/work",
+            "/work",
+            "--",
+            helper,
+            "--sandbox-policy-cwd",
+            "/work",
+        ]);
+        let mut expected = home_mounts();
+        expected.extend(args.clone());
+        assert_eq!(rewrite(&args).args, expected, "{helper}");
+    }
+    let missing = strings(&["--bind", "/work", "/work", "--"]);
+    assert_eq!(rewrite(&missing).args, missing);
 }
