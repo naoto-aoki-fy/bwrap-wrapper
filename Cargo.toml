@@ -8,3 +8,6 @@ description = "Compatibility-focused Rust port of the Codex bubblewrap shim"
 [[bin]]
 name = "bwrap"
 path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

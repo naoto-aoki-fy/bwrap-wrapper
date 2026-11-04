@@ -1,4 +1,6 @@
 fn main() {
-    eprintln!("bwrap-wrapper-rs: Phase 1 core only; logging and execution are not implemented");
-    std::process::exit(1);
+    if let Err(error) = bwrap_wrapper_rs::runtime::run() {
+        eprintln!("bwrap-wrapper: {error}");
+        std::process::exit(1);
+    }
 }

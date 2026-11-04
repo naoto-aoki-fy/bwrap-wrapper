@@ -372,6 +372,12 @@ fn mount_parser_exact_options_octal_dedup_and_ordering() {
 }
 
 #[test]
+fn mount_table_read_errors_are_propagated() {
+    let error = mounts::read_file("/definitely/missing/bwrap-wrapper-mounts").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
 fn windows_mounts_follow_all_mount_operations_before_separator() {
     let args = codex(&["--dev", "/dev"], &["--tmpfs", "/untouched"]);
     let mounts = mounts::parse("x /mnt/d 9p aname=drvfs\nx /c 9p aname=drvfs\n");

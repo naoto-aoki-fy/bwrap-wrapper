@@ -1,69 +1,56 @@
 # bwrap-wrapper-rs
 
-Phase 1 compatibility port of `bwrap-wrapper`, based on the supplied Python
-checkout at revision `e614a089b80b6f7832edd66950bba8f06abe0040`.
-The reference source and README were inspected directly. This is a Rust rewrite
-of that Apache-2.0 project; the original license is retained in `LICENSE`.
+A Linux Rust port of `bwrap-wrapper`, compatible with the Python reference at
+revision `e614a089b80b6f7832edd66950bba8f06abe0040`. It targets stable Rust
+2024, uses the small `libc` crate for POSIX process and time calls, and does not
+need Python at runtime.
 
-Requires Linux (including WSL2) and stable Rust 1.85 or newer, edition 2024.
-There are no external Cargo dependencies and no Python runtime dependency.
+Build and verify it with:
 
 ```sh
-cargo build
+cargo build --release
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The Cargo package is `bwrap-wrapper-rs`; its executable is `bwrap`.
-**Do not install this Phase 1 executable into PATH as a Bubblewrap replacement.**
-It currently prints a phase-status message and exits with status 1. Logging,
-environment acquisition, `/proc/mounts` reading, umask changes, and execution of
-real Bubblewrap are deferred to Phase 2. No tests execute Bubblewrap.
+The Cargo package is `bwrap-wrapper-rs`, and the executable is `bwrap`. Put it
+earlier in `PATH` than Codex's Bubblewrap lookup. Set `BWRAP_REAL` to the actual
+Bubblewrap path if needed, so the shim does not call itself recursively.
 
-## Core API
+## Behavior
 
-- `transform::is_codex` requires `--argv0 codex-linux-sandbox` before the first
-  separator and an immediately following command path ending in `/codex`.
-- `transform::workspace` scans all arguments for the first policy option,
-  including arguments after `--`. Empty or absent values are unspecified;
-  nonempty values use Python lexical `normpath` semantics and must be absolute.
-  The original policy arguments remain in the output.
-- `transform::transform` accepts original `OsString` arguments and explicit
-  `Inputs`: HOME, discovered configuration files, and Windows mount points.
-  Non-Codex arguments pass through unchanged without workspace validation.
-  Recognized calls rewrite `--dev /dev`, remove exact workspace `.git` overlays,
-  inject HOME mounts before the first exact workspace bind, and insert file
-  overlays after every matching bind. Windows tmpfs mounts come immediately
-  before the command separator. Command arguments stay unchanged.
-- `config::directory` takes HOME, optional XDG_CONFIG_HOME, and the absolute
-  process working directory explicitly. It follows Python `Path.absolute()`:
-  relative configuration homes become absolute without resolving `..` or
-  symlinks. An unset or empty XDG value falls back to `$HOME/.config`.
-- `config::files` reads direct regular files, including hidden files and symlinks
-  to regular files, in Python filename order. It excludes directories, broken
-  symlinks, and nested files. Missing or non-directory paths yield no overlays;
-  directory listing errors propagate. It never creates mount sources.
-- `mounts::parse` accepts UTF-8 mount-table text, selects `9p` with the exact
-  comma/semicolon-separated option `aname=drvfs`, decodes three-digit octal
-  escapes, deduplicates, and sorts by slash count then name.
+Every invocation requires `HOME`, logs the original and forwarded arguments,
+then replaces itself with Bubblewrap via `execv`. Non-Codex calls preserve their
+arguments. A Codex invocation must have `--argv0 codex-linux-sandbox` before the
+first `--` and a command path ending in `/codex` immediately after it. For those
+calls the wrapper performs the Python shim's workspace normalization, `/dev`
+rewrite, exact `.git` overlay removal, HOME mounts, configuration-file overlays,
+and WSL2 drvfs masking.
 
-Supply configuration files in discovery order and mount points in parser order.
-Discovery is intentionally separate: a future caller should discover mounts
-only for recognized invocations, and configuration only when a workspace bind
-matches. Phase 1 snapshots explicit discovery results; the Python program
-re-reads configuration after each bind, so concurrent filesystem changes between
-repeated binds are outside this pure transformation's model.
+`HOME` is required, including for non-Codex calls. `BWRAP_REAL` defaults to
+`/usr/bin/bwrap`; `BWRAP_LOG` defaults to `$HOME/.local/state/bwrap-wrapper.log`;
+and `XDG_CONFIG_HOME` defaults to `$HOME/.config` when unset or empty. Empty
+`BWRAP_REAL` and `BWRAP_LOG` values remain empty, matching the reference.
 
-## Compatibility boundaries
+For Codex calls, `/proc/mounts` is read and parsed for `9p` mounts with the exact
+`aname=drvfs` option. Matching mount points are deduplicated, octal escapes are
+decoded, and tmpfs mounts are inserted before `--`. The configured
+`bwrap-wrapper/cwd` directory contributes its direct regular files, including
+hidden files and symlinks to regular files, in Python filename order. Directory
+entries are read once for the invocation and their mount arguments are inserted
+after each matching workspace bind.
 
-Argument paths use Unix bytes without lossy UTF-8 conversion. Exact mount
-comparisons retain redundant slashes and dots in original arguments; only the
-workspace-policy value is normalized. Exactly two leading slashes are retained
-by Python-style normalization. Configuration sorting also reproduces Python's
-UTF-8/surrogateescape order for non-UTF-8 filenames. Octal mount escapes follow
-Python `chr()` semantics, including escapes above ASCII.
+The log records a local ISO 8601 timestamp, user, PID, Codex detection, Bubblewrap
+path, workspace, HOME mount status, quoted arguments, and every environment
+variable in name order. Existing log permissions are retained; new files use the
+startup umask `0077`. Logs can contain secrets from arguments and environment
+values. Protect them and redact before sharing.
 
-The scan retains the reference's handling of malformed options, including
-consumption of `--` as a bind operand. No extra argument validation is applied.
-Tests cover synthetic Linux/WSL2 mount data and temporary configuration trees;
-actual WSL2 mount isolation and runtime integration are not validated in Phase 1.
+## Implementation boundary
+
+The argument transformer takes explicit inputs and stays independent of
+filesystem discovery and process replacement. Mount parsing is separately
+testable with synthetic data. Integration tests use temporary fake executables;
+they do not run Bubblewrap or require mount privileges. WSL2 mount visibility
+has not been tested on a WSL2 host.

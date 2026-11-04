@@ -39,3 +39,14 @@ pub fn parse(contents: &str) -> Vec<OsString> {
     mounts.dedup();
     mounts.into_iter().map(OsString::from).collect()
 }
+
+/// Read and parse the real mount table. I/O and UTF-8 errors are returned to the caller.
+pub fn read_proc_mounts() -> std::io::Result<Vec<OsString>> {
+    read_file("/proc/mounts")
+}
+
+/// Read and parse a mount table at an explicit path, useful for testing I/O failures.
+pub fn read_file(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<OsString>> {
+    let contents = std::fs::read_to_string(path)?;
+    Ok(parse(&contents))
+}

@@ -28,7 +28,7 @@ pub fn files(directory: &OsStr) -> io::Result<Vec<OsString>> {
         return Ok(Vec::new());
     }
     let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| python_name_key(&entry.file_name()));
+    entries.sort_by_key(|entry| python_name_sort_key(&entry.file_name()));
     Ok(entries
         .into_iter()
         .filter(|entry| entry.path().is_file())
@@ -38,7 +38,7 @@ pub fn files(directory: &OsStr) -> io::Result<Vec<OsString>> {
 
 // Python sorts filesystem names after decoding UTF-8 with surrogateescape.
 // Preserve that order even when invalid bytes occur alongside non-BMP characters.
-fn python_name_key(name: &OsStr) -> Vec<u32> {
+pub(crate) fn python_name_sort_key(name: &OsStr) -> Vec<u32> {
     let mut bytes = name.as_bytes();
     let mut key = Vec::new();
     while !bytes.is_empty() {
