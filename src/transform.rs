@@ -141,6 +141,34 @@ pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, Relat
     }
 }
 
+/// Match complete protection groups using original operand bytes. The caller
+/// supplies only Bubblewrap options, so a group cannot cross the separator.
+fn workspace_protection_len(args: &[OsString], targets: &[OsString]) -> Option<usize> {
+    let (prefix_len, mount) = match args {
+        [option, _, rest @ ..] if option == "--perms" => (2, rest),
+        _ => (0, args),
+    };
+    match mount {
+        [option, source, target, ..]
+            if prefix_len == 0
+                && option == "--ro-bind"
+                && source == target
+                && targets.contains(target) =>
+        {
+            Some(3)
+        }
+        [option, target, remount, remount_target, ..]
+            if option == "--tmpfs"
+                && remount == "--remount-ro"
+                && target == remount_target
+                && targets.contains(target) =>
+        {
+            Some(prefix_len + 4)
+        }
+        _ => None,
+    }
+}
+
 /// Invoke discovery at the same points as Python: after each matching bind and
 /// when the rewrite loop reaches the command separator. Callbacks can be pure fixtures.
 pub fn transform_with_discovery<E>(
@@ -160,10 +188,11 @@ pub fn transform_with_discovery<E>(
         return Ok(out);
     }
     out.workspace = workspace(args).map_err(DiscoveryError::Workspace)?;
-    let git = out
+    let targets = out
         .workspace
         .as_deref()
-        .map(|w| join(w, OsStr::new(".git")));
+        .map(|w| [".git", ".agents", ".codex", ".aws"].map(|name| join(w, OsStr::new(name))));
+    let options_end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -174,13 +203,18 @@ pub fn transform_with_discovery<E>(
             out.args.extend_from_slice(&args[i..]);
             break;
         }
-        if arg == "--ro-bind"
-            && i + 2 < args.len()
-            && git
-                .as_ref()
-                .is_some_and(|g| args[i + 1] == *g && args[i + 2] == *g)
-        {
-            i += 3;
+        let protection_len = targets
+            .as_ref()
+            .and_then(|targets| workspace_protection_len(args.get(i..options_end)?, targets));
+        if let Some(len) = protection_len {
+            i += len;
+            continue;
+        }
+        // Retain an unmatched modifier and its value together, even if a
+        // malformed value spells a mount option such as --tmpfs.
+        if arg == "--perms" && i + 1 < options_end {
+            out.args.extend_from_slice(&args[i..i + 2]);
+            i += 2;
             continue;
         }
         if arg == "--dev" && args.get(i + 1).is_some_and(|a| a == "/dev") {

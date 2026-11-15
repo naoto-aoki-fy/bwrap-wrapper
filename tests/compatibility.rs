@@ -232,6 +232,268 @@ fn git_removal_uses_exact_bytes_and_removes_each_match() {
     assert_eq!(rewrite(&no_workspace).args, no_workspace);
 }
 
+fn protection_groups(path: &str) -> [Vec<OsString>; 3] {
+    [
+        strings(&["--ro-bind", path, path]),
+        strings(&["--perms", "555", "--tmpfs", path, "--remount-ro", path]),
+        strings(&["--tmpfs", path, "--remount-ro", path]),
+    ]
+}
+
+fn sandbox_invocation(
+    before: &[OsString],
+    after: &[OsString],
+    current_helper: bool,
+) -> Vec<OsString> {
+    let mut args = if current_helper {
+        vec![]
+    } else {
+        strings(&["--argv0", "codex-linux-sandbox"])
+    };
+    args.extend_from_slice(before);
+    args.extend(strings(&[
+        "--",
+        if current_helper {
+            "/opt/bin/codex-linux-sandbox"
+        } else {
+            "/opt/bin/codex"
+        },
+    ]));
+    args.extend_from_slice(after);
+    args
+}
+
+#[test]
+fn all_workspace_protections_removed_for_both_invocations_and_workspace_formats() {
+    for current_helper in [false, true] {
+        for policy in [
+            strings(&["--sandbox-policy-cwd", "/work/./a/../project/"]),
+            strings(&["--sandbox-policy-cwd=/work/./a/../project/"]),
+        ] {
+            for name in [".git", ".agents", ".codex", ".aws"] {
+                for group in protection_groups(&format!("/work/project/{name}")) {
+                    let mut tail = policy.clone();
+                    tail.extend(strings(&[
+                        "--permission-profile",
+                        r#"{ "permissions": ["workspace-write"], "note": "a\\b" }"#,
+                        "--",
+                        "/bin/sh",
+                        "-c",
+                        "printf '%s' \"$HOME\"",
+                    ]));
+                    tail.extend_from_slice(&group);
+                    tail.push(OsString::from_vec(b"raw\xff".to_vec()));
+                    let args = sandbox_invocation(&group, &tail, current_helper);
+                    let out = rewrite(&args);
+                    assert_eq!(out.workspace, Some("/work/project".into()));
+                    assert_eq!(
+                        out.args,
+                        sandbox_invocation(&[], &tail, current_helper),
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_adjacent_and_repeated_protections_preserve_other_transformations() {
+    let mut before = strings(&["--dev", "/dev", "--bind", "/work/project", "/work/project"]);
+    for _ in 0..2 {
+        before.extend(strings(&[
+            "--ro-bind",
+            "/work/project/.git",
+            "/work/project/.git",
+            "--ro-bind",
+            "/work/project/.agents",
+            "/work/project/.agents",
+            "--perms",
+            "555",
+            "--tmpfs",
+            "/work/project/.codex",
+            "--remount-ro",
+            "/work/project/.codex",
+            "--perms",
+            "555",
+            "--tmpfs",
+            "/work/project/.aws",
+            "--remount-ro",
+            "/work/project/.aws",
+            "--tmpfs",
+            "/work/project/.aws",
+            "--remount-ro",
+            "/work/project/.aws",
+        ]));
+    }
+    let mut retained = vec![];
+    for path in [
+        "/tmp/.git",
+        "/tmp/.agents",
+        "/tmp/.codex",
+        "/tmp/.aws",
+        "/tmp/codex-daemon-1000",
+        "/tmp/codex-mount-targets",
+    ] {
+        for group in protection_groups(path) {
+            retained.extend(group);
+        }
+    }
+    retained.extend(strings(&["--perms", "700", "--dir", "/unrelated"]));
+    before.extend_from_slice(&retained);
+    let tail = strings(&["--sandbox-policy-cwd", "/work/project"]);
+    let args = sandbox_invocation(&before, &tail, true);
+    let out = transform::transform(
+        &args,
+        &Inputs {
+            home: OsStr::new("/home/u"),
+            config_files: &strings(&["/cfg/AGENTS.md"]),
+            windows_mounts: &strings(&["/mnt/c"]),
+        },
+    )
+    .unwrap();
+    let mut expected = strings(&["--dev-bind", "/dev", "/dev"]);
+    expected.extend(home_mounts());
+    expected.extend(strings(&[
+        "--bind",
+        "/work/project",
+        "/work/project",
+        "--ro-bind",
+        "/cfg/AGENTS.md",
+        "/work/project/AGENTS.md",
+    ]));
+    expected.extend(retained);
+    expected.extend(strings(&["--tmpfs", "/mnt/c"]));
+    assert_eq!(out.args, sandbox_invocation(&expected, &tail, true));
+    assert!(out.home_inserted);
+}
+
+#[test]
+fn workspace_protection_matching_preserves_near_matches_and_different_operands() {
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        let target = format!("/work/project/{name}");
+        for path in [
+            format!("/tmp/{name}"),
+            format!("{target}-backup"),
+            format!("{target}/child"),
+            format!("{target}/"),
+            format!("/work/project/subdir/{name}"),
+            format!("/work/project/./{name}"),
+            format!("/work/project//{name}"),
+            format!("/work/project/subdir/../{name}"),
+        ] {
+            for group in protection_groups(&path) {
+                let args = sandbox_invocation(
+                    &group,
+                    &strings(&["--sandbox-policy-cwd=/work/./project/"]),
+                    true,
+                );
+                assert_eq!(rewrite(&args).args, args);
+            }
+        }
+        for group in [
+            strings(&["--ro-bind", "/other", &target]),
+            strings(&["--ro-bind", &target, "/other"]),
+            strings(&["--ro-bind-try", &target, &target]),
+            strings(&["--bind", &target, &target]),
+            strings(&["--tmpfs", &target, "--remount-ro", "/other"]),
+            strings(&["--tmpfs", "/other", "--remount-ro", &target]),
+            strings(&[
+                "--perms",
+                "555",
+                "--tmpfs",
+                &target,
+                "--remount-ro",
+                "/other",
+            ]),
+            strings(&["--perms", "700", "--dir", &target]),
+        ] {
+            let args = sandbox_invocation(
+                &group,
+                &strings(&["--sandbox-policy-cwd=/work/project"]),
+                true,
+            );
+            assert_eq!(rewrite(&args).args, args);
+        }
+    }
+}
+
+#[test]
+fn incomplete_protection_groups_are_preserved_without_crossing_separator() {
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        let target = format!("/work/project/{name}");
+        for group in protection_groups(&target) {
+            for len in 1..group.len() {
+                let args = sandbox_invocation(
+                    &group[..len],
+                    &strings(&["--sandbox-policy-cwd=/work/project"]),
+                    true,
+                );
+                assert_eq!(rewrite(&args).args, args, "{args:?}");
+            }
+        }
+        let missing_mode = sandbox_invocation(
+            &strings(&["--perms", "--tmpfs", &target, "--remount-ro", &target]),
+            &strings(&["--sandbox-policy-cwd=/work/project"]),
+            true,
+        );
+        assert_eq!(rewrite(&missing_mode).args, missing_mode);
+    }
+    let args = codex(
+        &[
+            "--sandbox-policy-cwd=/work/project",
+            "--perms",
+            "555",
+            "--tmpfs",
+            "/work/project/.aws",
+            "--dir",
+            "/unrelated",
+            "--remount-ro",
+            "/work/project/.aws",
+        ],
+        &[],
+    );
+    assert_eq!(rewrite(&args).args, args);
+}
+
+#[test]
+fn workspace_protections_require_codex_and_a_valid_workspace() {
+    let groups: Vec<_> = [".git", ".agents", ".codex", ".aws"]
+        .into_iter()
+        .flat_map(|name| protection_groups(&format!("/work/project/{name}")))
+        .flatten()
+        .collect();
+    let mut non_codex = groups.clone();
+    non_codex.extend(strings(&[
+        "--",
+        "/bin/true",
+        "--sandbox-policy-cwd=/work/project",
+    ]));
+    assert_eq!(rewrite(&non_codex).args, non_codex);
+    for current_helper in [false, true] {
+        for policy in [vec![], strings(&["--sandbox-policy-cwd="])] {
+            let args = sandbox_invocation(&groups, &policy, current_helper);
+            assert_eq!(rewrite(&args).args, args);
+        }
+        let args = sandbox_invocation(
+            &groups,
+            &strings(&["--sandbox-policy-cwd=relative"]),
+            current_helper,
+        );
+        assert_eq!(
+            transform::transform(
+                &args,
+                &Inputs {
+                    home: OsStr::new("/home/u"),
+                    config_files: &[],
+                    windows_mounts: &[],
+                },
+            ),
+            Err(transform::RelativeWorkspace)
+        );
+    }
+}
+
 #[test]
 fn home_once_overlays_after_each_workspace_bind() {
     let args = codex(

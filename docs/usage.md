@@ -69,9 +69,27 @@ The original policy arguments remain forwarded as supplied.
 Only recognized Codex calls receive these changes before the command separator:
 
 - `--dev /dev` becomes `--dev-bind /dev /dev`. Other device arguments stay intact.
-- Every exact `--ro-bind WORKSPACE/.git WORKSPACE/.git` is removed. Other mounts,
-  including spellings with redundant dots or slashes, stay intact. Comparison is
-  against the normalized workspace string, without normalizing bind operands.
+- For each direct workspace path `P` in `WORKSPACE/.git`, `WORKSPACE/.agents`,
+  `WORKSPACE/.codex`, and `WORKSPACE/.aws`, remove every exact protection group:
+
+  ```text
+  --ro-bind P P
+  --perms MODE --tmpfs P --remount-ro P
+  --tmpfs P --remount-ro P
+  ```
+
+  Both bind operands must equal `P`. A tmpfs mask is removed only together with
+  its adjacent matching read-only remount, including the associated `--perms MODE`
+  prefix when present. Incomplete groups are retained; matching never crosses
+  the command separator. Other permission modifiers and mounts stay intact.
+  Targets use the normalized workspace, but mount operands are compared byte for
+  byte, without normalization or symlink resolution. Out-of-workspace paths,
+  nested paths such as `WORKSPACE/subdir/.aws`, and near matches such as
+  `WORKSPACE/.codex-backup` or spellings with redundant dots or slashes remain.
+  These four paths inherit access from the workspace mount. This changes only
+  forwarded arguments; no directories or configuration files are deleted or
+  modified on disk. The expanded targets and tmpfs removal are an intentional
+  [change from the Python reference](compatibility.md#project-local-mount-protections).
 - Before the first exact `--bind WORKSPACE WORKSPACE`, insert this sequence:
 
   ```text
@@ -100,10 +118,11 @@ Only recognized Codex calls receive these changes before the command separator:
   name, so nested mounts follow their ancestors. A mount-table read or UTF-8
   decoding failure aborts. An ordinary Linux machine may have no such mounts.
 
-These changes expose the host's `/dev`, remove the workspace `.git` read-only
-overlay, hide HOME behind tmpfs with selected Codex paths re-exposed, make Codex
+These changes expose the host's `/dev`, remove the four project-local mount
+protections above, hide HOME behind tmpfs with selected Codex paths re-exposed, make Codex
 memories writable, and overlay detected Windows-drive mounts. They preserve the
-reference's access policy, with optional missing sources tolerated. No additional filtering or mount validation is applied.
+remaining mount policy, with optional missing sources tolerated. No additional
+filtering or mount validation is applied.
 
 The rewrite loop retains the reference's malformed-option behavior. For example,
 `--bind SOURCE --` consumes the separator as a destination; a consumed separator

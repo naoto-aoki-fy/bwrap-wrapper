@@ -80,6 +80,26 @@ inserted HOME sequence in Rust forwarded arguments and the Modified args log;
 all other arguments, logs, and outcomes remain compared. The reference checkout
 is unchanged. Real mount behavior is covered by the opt-in isolation suite.
 
+## Project-local mount protections
+
+Rust intentionally extends the reference's removal of exact project-local `.git`
+read-only binds to `.agents`, `.codex`, and `.aws` directly under the workspace.
+For all four targets `P`, it also removes complete `--tmpfs P --remount-ro P`
+groups, including an immediately preceding `--perms MODE` when present. The
+Python reference removes only `--ro-bind WORKSPACE/.git WORKSPACE/.git` and is
+unchanged. These paths now inherit the workspace mount's access; no on-disk
+directories or configuration files are changed by this argument rewrite.
+
+Shared matching uses the existing normalized workspace and exact original mount
+operand bytes. Both bind operands, or both tmpfs/remount operands, must equal the
+same target. Repeated and adjacent matches are removed before the first command
+separator; incomplete and nonmatching groups remain. Detection and workspace
+extraction retain their rules for both Codex invocation formats. Regression tests
+cover all four names and protection variants, workspace option formats, unrelated
+permissions and mounts, near matches, and byte-preserved command tails including
+permission-profile JSON and non-UTF-8 arguments. Existing tests continue to cover
+HOME isolation, generated helper mounts, configuration overlays, and Windows drives.
+
 ## Test commands
 
 Normal builds and tests need no Python, installed Bubblewrap, host WSL mounts, or
