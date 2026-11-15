@@ -17,10 +17,10 @@ explicit rewrite, with the reference revision acknowledged in the crate and READ
 | Configuration | Discovery after every matching bind; hidden files and file symlinks; no recursion; missing/empty directories; deterministic name order; metadata errors propagated |
 | Windows drives | Synthetic 9p tables, comma/semicolon options, exact token matching, octal decoding, duplicates, nested paths, Python whitespace, CR/LF input |
 | Command tail | First unconsumed separator and remaining arguments retained; malformed bind consuming separator does not trigger mounts |
-| Non-Codex calls | No workspace validation or discovery, arguments unchanged, logging still required |
+| Non-Codex calls | No workspace validation or mount discovery, arguments unchanged; TOML settings loaded and logging optional |
 | Environment | Required HOME; unset and empty variable semantics; relative XDG paths; PATH discovery excluding this executable |
-| Logs | Python boolean spelling, local ISO timestamp with offset seconds when needed, UID username, PID, shlex quoting, sorted environment, permissions, failures before exec |
-| Unix bytes | Pure transformation preserves invalid UTF-8; runtime logging rejects it like Python's strict encoder, including invalid environment values |
+| Logs | Disabled by default; when enabled, Python boolean spelling, local ISO timestamp with offset seconds when needed, UID username, PID, shlex quoting, sorted environment, permissions, failures before exec |
+| Unix bytes | Transformation and execution preserve invalid UTF-8; enabled logging rejects it like Python's strict encoder, including invalid environment values |
 | Process execution | PATH discovery followed by actual execv, same PID, inherited environment and stdin/stdout/stderr, exit code and signal propagation; no execution on error |
 
 The Phase 3 audit corrected these differences from the previous Rust phases:
@@ -40,6 +40,23 @@ The Phase 3 audit corrected these differences from the previous Rust phases:
 - Mount parsing includes Python's additional whitespace characters and universal
   newline behavior. Discovery callbacks replace duplicated runtime argument scans.
 - Buffered log writes and explicit close-error handling complete before exec.
+
+## Optional invocation logging
+
+Rust intentionally adds optional TOML settings alongside the existing `cwd`
+overlay directory. Logging is disabled unless `logging.enabled = true` in
+`${XDG_CONFIG_HOME:-$HOME/.config}/bwrap-wrapper/config.toml`. Settings are
+validated before log preparation for every invocation; read, TOML syntax, and
+supported-setting type errors include the file path and abort before execution.
+Disabled logging skips log preparation, identity lookup, environment collection,
+and serialization, preserving existing logs and accepting unusable `BWRAP_LOG`
+values. Wrapper diagnostics and program streams remain available.
+
+The Python reference remains unchanged and logs unconditionally. The differential
+checker explicitly enables Rust logging in its temporary settings files to
+compare the existing enabled behavior. Runtime tests separately cover defaults,
+both boolean values, invalid settings, path resolution, and disabled execution.
+See [configuration](usage.md#configuration) for usage examples.
 
 ## Executable discovery
 
@@ -140,7 +157,8 @@ python3 scripts/check_reference.py
 ```
 
 The script builds the Rust test driver, imports the reference with a mock mount
-reader, and runs both against the same temporary fake executable. It compares
+reader, enables Rust logging through temporary TOML settings, and runs both
+against the same temporary fake executable. It compares
 success/failure, exact forwarded argument bytes, and complete successful log
 entries except for naturally different timestamps and PIDs. Cases cover Unicode,
 quotes, malformed and missing options, multiple binds and Git overlays, synthetic
@@ -206,13 +224,13 @@ project or system toolchain change is required by the implementation.
 ## Project structure
 
 ```text
-Cargo.toml / Cargo.lock      package, executable, and libc dependency
+Cargo.toml / Cargo.lock      package, executable, and dependencies
 LICENSE                     original Apache-2.0 license
 README.md                   essential setup and links
 src/main.rs                 executable entry and nonzero errors
 src/runtime.rs              environment, discovery orchestration, execv
 src/transform.rs            argument parsing and rewrite with injectable discovery
-src/config.rs               configuration paths, sorting, and regular-file discovery
+src/config.rs               TOML settings, configuration paths, sorting, file discovery
 src/mounts.rs               pure mount parser and actual mount-table reader
 src/logging.rs              strict UTF-8 logging, quoting, time, and UID identity
 src/paths.rs                Python-compatible Unix path operations

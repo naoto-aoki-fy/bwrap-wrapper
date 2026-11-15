@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 
 struct Settings {
     home: OsString,
-    log_file: OsString,
+    log_file: Option<OsString>,
     config_home: Option<OsString>,
 }
 
@@ -18,15 +18,18 @@ impl Settings {
         config_home: Option<OsString>,
     ) -> Result<Self, String> {
         let home = home.ok_or("HOME environment variable is required")?;
-        let log_file = log_file.unwrap_or_else(|| {
-            let mut value = home.as_bytes().to_vec();
-            value.extend_from_slice(b"/.local/state/bwrap-wrapper.log");
-            OsString::from_vec(value)
-        });
         Ok(Self {
             home,
             log_file,
             config_home,
+        })
+    }
+
+    fn log_path(&self) -> OsString {
+        self.log_file.clone().unwrap_or_else(|| {
+            let mut value = self.home.as_bytes().to_vec();
+            value.extend_from_slice(b"/.local/state/bwrap-wrapper.log");
+            OsString::from_vec(value)
         })
     }
 
@@ -67,8 +70,15 @@ fn run_with_mount_reader(
     mount_reader: impl FnMut() -> io::Result<Vec<OsString>>,
     settings: Settings,
 ) -> Result<(), String> {
-    let log = logging::InvocationLog::prepare(&settings.log_file)
-        .map_err(|e| format!("failed to prepare invocation log: {e}"))?;
+    let config = config::load(&settings.home, settings.config_home.as_deref())?;
+    let log = if config.logging.enabled {
+        Some(
+            logging::InvocationLog::prepare(&settings.log_path())
+                .map_err(|e| format!("failed to prepare invocation log: {e}"))?,
+        )
+    } else {
+        None
+    };
     let output = transform::transform_with_discovery(
         original,
         &settings.home,
@@ -78,10 +88,12 @@ fn run_with_mount_reader(
     .map_err(|e| e.to_string())?;
 
     let real_bwrap = find_bwrap()?;
-    let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    environment.sort_by_cached_key(|(key, _)| config::python_name_sort_key(key));
-    log.append(&real_bwrap, original, &output, &environment)
-        .map_err(|e| format!("failed to write invocation log: {e}"))?;
+    if let Some(log) = log {
+        let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        environment.sort_by_cached_key(|(key, _)| config::python_name_sort_key(key));
+        log.append(&real_bwrap, original, &output, &environment)
+            .map_err(|e| format!("failed to write invocation log: {e}"))?;
+    }
     execv(&real_bwrap, &output.args)
         .map_err(|e| format!("failed to execute {}: {e}", real_bwrap.to_string_lossy()))
 }
@@ -138,13 +150,16 @@ mod tests {
     #[test]
     fn environment_defaults_and_empty_values_match_reference() {
         let settings = Settings::from_values(Some("/home/u".into()), None, None).unwrap();
-        assert_eq!(settings.log_file, "/home/u/.local/state/bwrap-wrapper.log");
+        assert_eq!(
+            settings.log_path(),
+            "/home/u/.local/state/bwrap-wrapper.log"
+        );
         assert_eq!(settings.config_home, None);
 
         let settings =
             Settings::from_values(Some("/home/u/".into()), Some("".into()), Some("".into()))
                 .unwrap();
-        assert_eq!(settings.log_file, "");
+        assert_eq!(settings.log_path(), "");
         assert_eq!(
             settings.config_home.as_deref(),
             Some(std::ffi::OsStr::new(""))

@@ -153,6 +153,16 @@ def main():
                 environment_case["BWRAP_LOG"] = ""
             elif index == len(cases) - 1:
                 environment_case.pop("HOME")
+            # Rust logging is opt-in; keep comparing the legacy enabled behavior.
+            # Skip the deliberately invalid config path and missing-HOME cases.
+            if "HOME" in environment_case and index != len(cases) - 4:
+                config_home = environment_case.get("XDG_CONFIG_HOME") or os.path.join(
+                    environment_case["HOME"], ".config")
+                settings = Path(config_home) / "bwrap-wrapper/config.toml"
+                if not settings.is_absolute():
+                    settings = ROOT / settings
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_text("[logging]\nenabled = true\n", encoding="utf-8")
             args_file.write_bytes(b"".join(os.fsencode(arg) + b"\0" for arg in arguments))
             observed = []
             for command in [

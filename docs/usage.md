@@ -3,10 +3,11 @@
 ## Build and installation
 
 Supported targets are Linux and WSL2 Linux distributions. Use a stable Rust
-compiler supporting edition 2024 (1.85+), Cargo, and a system linker. The only
-Cargo dependency is `libc`. Actual sandboxing needs a working Bubblewrap and the
-host's normal user/mount namespace support. Ordinary runtime tests use fake executables; the separate
-[real isolation suite](isolation.md) verifies effective mounts with Bubblewrap.
+compiler supporting edition 2024 (1.85+), Cargo, and a system linker. Cargo
+dependencies include `libc`, Serde, and a TOML parser. Actual sandboxing needs a
+working Bubblewrap and the host's normal user/mount namespace support. Ordinary
+runtime tests use fake executables; the separate [real isolation suite](isolation.md)
+verifies effective mounts with Bubblewrap.
 
 From the repository root:
 
@@ -37,12 +38,52 @@ signal termination by replacing the process. Execution failure exits nonzero.
 | --- | --- | --- |
 | `HOME` | Required; absence fails even for non-Codex calls | Accepted, as in Python |
 | `PATH` | Required to find Bubblewrap | Searches the current directory |
-| `BWRAP_LOG` | `$HOME/.local/state/bwrap-wrapper.log` | Preserved; logging fails |
+| `BWRAP_LOG` | `$HOME/.local/state/bwrap-wrapper.log` when logging is enabled | Ignored when disabled; logging fails when enabled |
 | `XDG_CONFIG_HOME` | `$HOME/.config` | Uses `$HOME/.config` |
 
-There is no separate settings file. No missing mount source is automatically
-created. Missing optional packages, memories, and AGENTS.md sources are skipped by
-Bubblewrap; existing sources keep their documented permissions.
+No missing mount source is automatically created. Missing optional packages,
+memories, and AGENTS.md sources are skipped by Bubblewrap; existing sources keep
+their documented permissions.
+
+## Configuration
+
+The optional settings file is `$XDG_CONFIG_HOME/bwrap-wrapper/config.toml` when
+`XDG_CONFIG_HOME` is set and nonempty, or `$HOME/.config/bwrap-wrapper/config.toml`
+otherwise. Relative configuration homes are made absolute from the working
+directory, retaining `..` without resolving symlinks, just like mount discovery.
+The file sits alongside the existing `bwrap-wrapper/cwd/` overlay directory;
+it is not mounted into the workspace.
+
+Invocation logging is **disabled by default** for both Codex and other calls.
+Enable it explicitly with:
+
+```toml
+[logging]
+enabled = true
+```
+
+Disable it with:
+
+```toml
+[logging]
+enabled = false
+```
+
+A missing or empty file, missing `[logging]` section, or missing `enabled` key
+also disables logging. `logging.enabled` must be a boolean; strings such as
+`"true"` and numbers are invalid. Unsupported keys are ignored.
+
+Settings are read and validated before preparing any invocation log. An existing
+file that cannot be read, invalid TOML, or an incorrect type for a supported
+setting produces a stderr diagnostic containing the configuration path and exits
+nonzero, without creating log artifacts or executing Bubblewrap.
+
+`BWRAP_LOG` only selects the destination when `logging.enabled = true`; setting
+it never enables logging. With logging disabled, no log files or parent
+directories are created, existing logs remain untouched, and empty or unusable
+`BWRAP_LOG` values do not prevent execution. Timestamp and username lookup and
+environment collection for logging are skipped. Wrapper errors still go to
+stderr, and the executed program retains its stdout and stderr.
 
 ## Codex invocation detection and workspace
 
@@ -53,8 +94,9 @@ Two invocation formats are supported:
 - Current: immediately after the first `--`, an executable with exact basename
   `codex-linux-sandbox` (including a bare helper name, without a trailing slash).
 
-Other calls are logged and forwarded unchanged. The first workspace option,
-`--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH`, supplies the workspace.
+Other calls are forwarded unchanged and logged only when enabled. The first
+workspace option, `--sandbox-policy-cwd PATH` or `--sandbox-policy-cwd=PATH`, supplies
+the workspace.
 Legacy calls scan the entire argument list as Python does. Current calls scan
 only the helper arguments before its nested `--`, excluding shell arguments.
 A missing final value or an empty value means unspecified.
@@ -140,9 +182,11 @@ command arguments after it are preserved byte for byte.
 
 ## Logging and failures
 
-At startup the process sets umask `0077`, creates the log's parent directories,
-and captures local timestamp and username for the current UID before workspace
-validation. New log files normally get mode `0600`, and new directories `0700`.
+At startup the process sets umask `0077` and validates settings. When logging is
+enabled, it then creates the log's parent directories and captures local timestamp
+and username for the current UID before workspace validation. `BWRAP_LOG` overrides
+the default `$HOME/.local/state/bwrap-wrapper.log` destination. New log files
+normally get mode `0600`, and new directories `0700`.
 Existing log permissions are preserved. Entries are appended between
 `========== BWRAP START ==========` and `=========== BWRAP END ===========`:
 
@@ -166,14 +210,17 @@ matching `shlex.quote`. The entire environment is included in name order. Logs
 may contain credentials and other secrets: protect them and redact before
 sharing. There is no rotation or automatic redaction.
 
-Logging uses strict UTF-8 like Python's `open(..., encoding="utf-8")`. Although
-parsing and rewriting preserve Unix argument bytes, invalid UTF-8 in a logged
+Enabled logging uses strict UTF-8 like Python's `open(..., encoding="utf-8")`.
+Although parsing and rewriting preserve Unix argument bytes, invalid UTF-8 in a logged
 argument, path, username, or environment entry prevents execution. This preserves
 Python's failure on surrogateescaped data. A failed attempt may leave a partial
 log entry; log-directory creation can occur even when workspace validation fails.
+With logging disabled, Unix argument and environment bytes are forwarded without
+this logging-only UTF-8 validation.
 
-Missing HOME, invalid workspace, discovery failures, logging failures, and failed
-exec all stop with a nonzero status. There is no fallback to unmodified arguments.
+Missing HOME, invalid settings or workspace, discovery failures, enabled logging
+failures, and failed exec all stop with a nonzero status. There is no fallback to
+unmodified arguments.
 See the [audit](compatibility.md) for validation boundaries and diagnostic details.
 
 See [real mount isolation results](isolation.md) for verified permissions and

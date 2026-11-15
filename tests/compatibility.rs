@@ -728,6 +728,10 @@ fn configuration_home_fallback_and_relative_pathlib_semantics() {
             config::directory(OsStr::new("/home/u"), xdg, OsStr::new("/run")),
             OsString::from("/home/u/.config/bwrap-wrapper/cwd")
         );
+        assert_eq!(
+            config::settings_path(OsStr::new("/home/u"), xdg, OsStr::new("/run")),
+            OsString::from("/home/u/.config/bwrap-wrapper/config.toml")
+        );
     }
     for (xdg, expected) in [
         ("../cfg/./", "/run/../cfg/bwrap-wrapper/cwd"),
@@ -737,6 +741,10 @@ fn configuration_home_fallback_and_relative_pathlib_semantics() {
         assert_eq!(
             config::directory(OsStr::new("/h"), Some(OsStr::new(xdg)), OsStr::new("/run")),
             OsString::from(expected)
+        );
+        assert_eq!(
+            config::settings_path(OsStr::new("/h"), Some(OsStr::new(xdg)), OsStr::new("/run")),
+            OsString::from(expected.replace("/cwd", "/config.toml"))
         );
     }
 }

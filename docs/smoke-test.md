@@ -17,6 +17,8 @@ printf 'inherited marker: %s\n' "$SMOKE_MARKER"
 exit 23
 SH
 chmod 755 "$smoke_dir/bwrap"
+mkdir -p "$smoke_dir/home/.config/bwrap-wrapper"
+printf '[logging]\nenabled = true\n' > "$smoke_dir/home/.config/bwrap-wrapper/config.toml"
 env -i PATH="$smoke_dir:/usr/bin:/bin" HOME="$smoke_dir/home" \
   BWRAP_LOG="$smoke_dir/invocations.log" SMOKE_MARKER=visible \
   ./target/release/bwrap --dev /dev -- /bin/true 'two words'
@@ -29,8 +31,11 @@ rm -r -- "$smoke_dir"
 Use a shell without `set -e`, or guard the invocation so the expected status 23
 does not stop your shell before the status capture. Expect unchanged arguments,
 `inherited marker: visible`, `Codex invocation: False`, and status 23. This
-procedure clears the inherited environment before invocation; ordinary wrapper
-logs can contain secrets and should be protected.
+procedure explicitly enables logging in a temporary configuration file and clears
+the inherited environment before invocation; enabled wrapper logs can contain
+secrets and should be protected. Logging is disabled by default, and `BWRAP_LOG`
+alone does not enable it. To check the disabled behavior, change `true` to `false`
+and omit the `cat` command; execution still returns 23 and no log is created.
 The temporary variable is deliberately named `smoke_dir` and HOME is changed only
 for that one command.
 

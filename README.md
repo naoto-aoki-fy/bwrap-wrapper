@@ -1,8 +1,8 @@
 # bwrap-wrapper-rs
 
 A standalone Rust wrapper for Bubblewrap on Linux and WSL2. It adjusts Codex
-sandbox mounts, logs each invocation, and replaces itself with the real `bwrap`.
-Other invocations retain their arguments.
+sandbox mounts, optionally logs invocations, and replaces itself with the real
+`bwrap`. Other invocations retain their arguments.
 
 Requires stable Rust 1.85+ (edition 2024), a linker, and Bubblewrap for actual use.
 Build and install into a separate directory, keeping the real executable intact:
@@ -14,7 +14,12 @@ export PATH="$HOME/.local/lib/bwrap-wrapper/bin:$PATH"
 codex
 ```
 
-`HOME` is required. Logs include the entire environment and can contain secrets.
+`HOME` is required. Logging is disabled by default. To enable it, set
+`[logging]` with `enabled = true` in
+`${XDG_CONFIG_HOME:-$HOME/.config}/bwrap-wrapper/config.toml`.
+See [configuration and logging](docs/usage.md#configuration) for examples and errors.
+When enabled, logs include the entire environment and can contain secrets;
+`BWRAP_LOG` overrides the log path without enabling logging.
 The wrapper searches PATH for the first executable `bwrap` other than itself.
 
 - [Usage, environment variables, mount behavior, and logging](docs/usage.md)

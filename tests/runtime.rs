@@ -27,6 +27,7 @@ impl Drop for TempDir {
 }
 
 struct Fixture {
+    _execution_guard: std::sync::MutexGuard<'static, ()>,
     temp: TempDir,
     fake: std::path::PathBuf,
     log: std::path::PathBuf,
@@ -34,6 +35,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        // Concurrent child creation can briefly inherit another test's writable
+        // executable descriptor before exec, causing ETXTBSY. Serialize fixtures.
+        static EXECUTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let execution_guard = EXECUTION.lock().unwrap();
         let temp = TempDir::new();
         let fake = temp.path("bwrap");
         std::fs::write(&fake, "#!/bin/sh\nprintf 'PID=%s\\n' \"$$\" > \"$FAKE_RESULT\"\nprintf 'ENV=%s\\n' \"$FAKE_SECRET\" >> \"$FAKE_RESULT\"\nprintf 'ARG=%s\\n' \"$@\" >> \"$FAKE_RESULT\"\nif [ -f \"$BWRAP_LOG\" ]; then printf 'LOG=present\\n' >> \"$FAKE_RESULT\"; fi\nexit \"$FAKE_EXIT\"\n").unwrap();
@@ -41,6 +46,7 @@ impl Fixture {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake, permissions).unwrap();
         Self {
+            _execution_guard: execution_guard,
             log: temp.path("state/wrapper.log"),
             result: temp.path("result"),
             fake,
@@ -62,6 +68,14 @@ impl Fixture {
     }
     fn run(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
+    }
+    fn write_config(&self, contents: &str) {
+        let path = self.temp.path("home/.config/bwrap-wrapper/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+    fn enable_logging(&self) {
+        self.write_config("[logging]\nenabled = true\n");
     }
     fn lines(&self) -> Vec<String> {
         std::fs::read_to_string(&self.result)
@@ -100,9 +114,265 @@ impl Fixture {
     }
 }
 
+const DISABLED_CONFIGS: [Option<&str>; 5] = [
+    None,
+    Some(""),
+    Some("[other]\nvalue = true\n"),
+    Some("[logging]\n"),
+    Some("[logging]\nenabled = false\n"),
+];
+
+#[test]
+fn logging_is_disabled_unless_explicitly_enabled() {
+    for contents in DISABLED_CONFIGS {
+        for override_log in [false, true] {
+            let fixture = Fixture::new();
+            if let Some(contents) = contents {
+                fixture.write_config(contents);
+            }
+            let args = ["--dev", "/dev", "two words", "", "a'b"];
+            std::fs::write(
+                &fixture.fake,
+                "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$FAKE_RESULT\"\nprintf 'stdout-message\\n'\nprintf 'stderr-message\\n' >&2\nexit 23\n",
+            )
+            .unwrap();
+            let mut command = fixture.command(&args);
+            if !override_log {
+                command.env_remove("BWRAP_LOG");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(output.status.code(), Some(23), "{contents:?}: {output:?}");
+            assert_eq!(output.stdout, b"stdout-message\n");
+            assert_eq!(output.stderr, b"stderr-message\n");
+            assert_eq!(
+                std::fs::read(&fixture.result).unwrap(),
+                args.iter()
+                    .flat_map(|arg| arg.bytes().chain([0]))
+                    .collect::<Vec<_>>()
+            );
+            assert!(!fixture.log.parent().unwrap().exists());
+            assert!(!fixture.temp.path("home/.local").exists());
+        }
+    }
+}
+
+#[test]
+fn disabled_logging_leaves_existing_logs_untouched() {
+    for contents in DISABLED_CONFIGS {
+        let fixture = Fixture::new();
+        if let Some(contents) = contents {
+            fixture.write_config(contents);
+        }
+        std::fs::create_dir_all(fixture.log.parent().unwrap()).unwrap();
+        std::fs::write(&fixture.log, b"existing log\n\xff").unwrap();
+        std::fs::set_permissions(&fixture.log, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let before = std::fs::metadata(&fixture.log).unwrap();
+        assert!(fixture.run(&["argument"]).status.success());
+        let after = std::fs::metadata(&fixture.log).unwrap();
+        assert_eq!(std::fs::read(&fixture.log).unwrap(), b"existing log\n\xff");
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        assert_eq!(after.permissions().mode(), before.permissions().mode());
+    }
+}
+
+#[test]
+fn disabled_logging_ignores_empty_and_unusable_log_paths() {
+    for contents in [None, Some("[logging]\nenabled = false\n")] {
+        let fixture = Fixture::new();
+        if let Some(contents) = contents {
+            fixture.write_config(contents);
+        }
+        let blocker = fixture.temp.path("not-a-directory");
+        std::fs::write(&blocker, "file").unwrap();
+        for path in [
+            std::path::PathBuf::new(),
+            blocker.join("new-parent/wrapper.log"),
+            fixture.temp.0.clone(),
+        ] {
+            let output = fixture
+                .command(&["argument"])
+                .env("BWRAP_LOG", path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty());
+            assert_eq!(fixture.lines()[2], "ARG=argument");
+        }
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"file");
+        assert!(!fixture.log.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn disabled_logging_preserves_non_utf8_arguments_and_environment() {
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = Fixture::new();
+    let output = fixture
+        .command(&[])
+        .arg(OsString::from_vec(b"arg\xff".to_vec()))
+        .env("FAKE_SECRET", OsString::from_vec(b"value\xff".to_vec()))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let result = std::fs::read(&fixture.result).unwrap();
+    assert!(result.ends_with(b"ENV=value\xff\nARG=arg\xff\n"));
+    assert!(!fixture.log.parent().unwrap().exists());
+}
+
+#[test]
+fn invalid_configuration_stops_before_log_preparation_and_exec() {
+    for contents in [
+        "[logging",
+        "[logging]\nenabled = true\nenabled = false\n",
+        "[logging]\nenabled = true\n[invalid",
+        "[logging]\nenabled = 'true'\n",
+        "[logging]\nenabled = 'false'\n",
+        "[logging]\nenabled = 1\n",
+        "[logging]\nenabled = 0.0\n",
+        "[logging]\nenabled = []\n",
+        "[logging]\nenabled = {}\n",
+        "logging = false\n",
+        "[[logging]]\nenabled = true\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write_config(contents);
+        for codex in [false, true] {
+            let mut command = if codex {
+                fixture.codex_command(&["--", "/opt/codex-linux-sandbox"])
+            } else {
+                fixture.command(&["argument"])
+            };
+            let output = command.output().unwrap();
+            assert!(!output.status.success(), "{contents}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("invalid configuration file"), "{error}");
+            assert!(
+                error.contains(
+                    fixture
+                        .temp
+                        .path("home/.config/bwrap-wrapper/config.toml")
+                        .to_str()
+                        .unwrap()
+                ),
+                "{error}"
+            );
+            assert!(!fixture.result.exists());
+            assert!(!fixture.log.parent().unwrap().exists());
+        }
+    }
+}
+
+#[test]
+fn unreadable_configuration_reports_its_path_before_logging_or_exec() {
+    for directory in [false, true] {
+        let fixture = Fixture::new();
+        let path = fixture.temp.path("home/.config/bwrap-wrapper/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if directory {
+            // A directory is a deterministic read error even when tests run as root.
+            std::fs::create_dir(&path).unwrap();
+        } else {
+            std::fs::write(&path, [0xff]).unwrap();
+        }
+        let output = fixture.run(&[]);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("failed to read configuration file"),
+            "{error}"
+        );
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(!fixture.result.exists());
+        assert!(!fixture.log.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn settings_are_loaded_from_xdg_or_home_fallback() {
+    for xdg in [
+        None,
+        Some(""),
+        Some("xdg"),
+        Some("relative/../xdg/./"),
+        Some("absolute"),
+    ] {
+        let fixture = Fixture::new();
+        std::fs::create_dir(fixture.temp.path("relative")).unwrap();
+        // The fallback must be ignored when XDG_CONFIG_HOME is nonempty.
+        fixture.write_config("[logging]\nenabled = 'invalid fallback'\n");
+        let (config_path, xdg_value) = match xdg {
+            None | Some("") => (
+                fixture.temp.path("home/.config/bwrap-wrapper/config.toml"),
+                xdg.map(OsString::from),
+            ),
+            Some("absolute") => (
+                fixture.temp.path("xdg/bwrap-wrapper/config.toml"),
+                Some(fixture.temp.path("xdg").into_os_string()),
+            ),
+            Some(value) => (
+                fixture.temp.path("xdg/bwrap-wrapper/config.toml"),
+                Some(value.into()),
+            ),
+        };
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        // Dotted keys are TOML too; unsupported settings do not enable logging.
+        std::fs::write(&config_path, "logging.enabled = true\nother = 'ignored'\n").unwrap();
+        let mut command = fixture.command(&["argument"]);
+        command.current_dir(&fixture.temp.0);
+        if let Some(value) = xdg_value {
+            command.env("XDG_CONFIG_HOME", value);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{xdg:?}: {output:?}");
+        assert!(fixture.log.is_file());
+    }
+}
+
+#[test]
+fn enabled_logging_uses_default_log_path_when_override_is_unset() {
+    let fixture = Fixture::new();
+    fixture.enable_logging();
+    let output = fixture
+        .command(&["argument"])
+        .env_remove("BWRAP_LOG")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let path = fixture.temp.path("home/.local/state/bwrap-wrapper.log");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Original args: argument\n")
+    );
+    assert_eq!(
+        std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert!(!fixture.log.parent().unwrap().exists());
+}
+
+#[test]
+fn nonempty_xdg_without_settings_does_not_load_home_settings() {
+    let fixture = Fixture::new();
+    fixture.enable_logging();
+    let output = fixture
+        .command(&["argument"])
+        .env("XDG_CONFIG_HOME", fixture.temp.path("missing-config"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!fixture.log.parent().unwrap().exists());
+    assert!(!fixture.temp.path("missing-config").exists());
+}
+
 #[test]
 fn non_codex_passthrough_logs_before_exec_and_inherits_environment_and_pid() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let args = ["--dev", "/dev", "plain argument", "it\'s quoted", ""];
     let mut command = fixture.command(&args);
     let child = command.spawn().unwrap();
@@ -143,12 +413,17 @@ fn non_codex_passthrough_logs_before_exec_and_inherits_environment_and_pid() {
 #[test]
 fn existing_log_permissions_are_preserved() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     std::fs::create_dir_all(fixture.log.parent().unwrap()).unwrap();
     std::fs::write(&fixture.log, "existing\n").unwrap();
     let mut permissions = std::fs::metadata(&fixture.log).unwrap().permissions();
     permissions.set_mode(0o640);
     std::fs::set_permissions(&fixture.log, permissions).unwrap();
     assert!(fixture.run(&["--", "/bin/true"]).status.success());
+    assert!(fixture.run(&["--", "/bin/true"]).status.success());
+    let log = std::fs::read_to_string(&fixture.log).unwrap();
+    assert!(log.starts_with("existing\n"));
+    assert_eq!(log.matches("========== BWRAP START ==========").count(), 2);
     assert_eq!(
         std::fs::metadata(&fixture.log)
             .unwrap()
@@ -161,65 +436,82 @@ fn existing_log_permissions_are_preserved() {
 
 #[test]
 fn codex_arguments_are_transformed_and_exit_status_propagates() {
-    let fixture = Fixture::new();
-    let xdg = fixture.temp.path("xdg");
-    let config_dir = xdg.join("bwrap-wrapper/cwd");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(config_dir.join(".overlay"), "overlay").unwrap();
-    std::fs::create_dir(config_dir.join("directory")).unwrap();
-    let args = [
-        "--argv0",
-        "codex-linux-sandbox",
-        "--sandbox-policy-cwd",
-        "/work/./",
-        "--dev",
-        "/dev",
-        "--ro-bind",
-        "/work/.git",
-        "/work/.git",
-        "--bind",
-        "/work",
-        "/work",
-        "--",
-        "/opt/codex",
-        "tail arg",
-    ];
-    let mut command = fixture.codex_command(&args);
-    command.env("XDG_CONFIG_HOME", &xdg);
-    command.env("FAKE_EXIT", "23");
-    let output = command.output().unwrap();
-    assert_eq!(output.status.code(), Some(23));
-    let lines = fixture.lines();
-    let home = fixture.temp.path("home");
-    let cwd = std::env::current_dir().unwrap();
-    let config_dir = config::directory(home.as_os_str(), Some(xdg.as_os_str()), cwd.as_os_str());
-    let config_files = config::files(&config_dir).unwrap();
-    let windows_mounts = mounts::read_file(fixture.temp.path("mounts")).unwrap();
-    let original = args.map(OsString::from);
-    let expected = transform::transform(
-        &original,
-        &transform::Inputs {
-            home: home.as_os_str(),
-            config_files: &config_files,
-            windows_mounts: &windows_mounts,
-        },
-    )
-    .unwrap()
-    .args
-    .iter()
-    .map(|arg| format!("ARG={}", arg.to_string_lossy()))
-    .collect::<Vec<_>>();
-    assert_eq!(&lines[2..lines.len() - 1], expected);
-    assert_eq!(lines.last().unwrap(), "LOG=present");
-    let log = std::fs::read_to_string(&fixture.log).unwrap();
-    assert!(log.contains("Codex invocation: True\n"));
-    assert!(log.contains("Sandbox CWD: /work\n"));
-    assert!(log.contains("Tmpfs inserted: True\n"));
+    for enabled in [false, true] {
+        let fixture = Fixture::new();
+        let xdg = fixture.temp.path("xdg");
+        let config_dir = xdg.join("bwrap-wrapper/cwd");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            xdg.join("bwrap-wrapper/config.toml"),
+            format!("[logging]\nenabled = {enabled}\n"),
+        )
+        .unwrap();
+        std::fs::write(config_dir.join(".overlay"), "overlay").unwrap();
+        std::fs::create_dir(config_dir.join("directory")).unwrap();
+        let args = [
+            "--argv0",
+            "codex-linux-sandbox",
+            "--sandbox-policy-cwd",
+            "/work/./",
+            "--dev",
+            "/dev",
+            "--ro-bind",
+            "/work/.git",
+            "/work/.git",
+            "--bind",
+            "/work",
+            "/work",
+            "--",
+            "/opt/codex",
+            "tail arg",
+        ];
+        let mut command = fixture.codex_command(&args);
+        command.env("XDG_CONFIG_HOME", &xdg);
+        command.env("FAKE_EXIT", "23");
+        if !enabled {
+            command.env("BWRAP_LOG", "");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(23));
+        let lines = fixture.lines();
+        let home = fixture.temp.path("home");
+        let cwd = std::env::current_dir().unwrap();
+        let config_dir =
+            config::directory(home.as_os_str(), Some(xdg.as_os_str()), cwd.as_os_str());
+        let config_files = config::files(&config_dir).unwrap();
+        let windows_mounts = mounts::read_file(fixture.temp.path("mounts")).unwrap();
+        let original = args.map(OsString::from);
+        let expected = transform::transform(
+            &original,
+            &transform::Inputs {
+                home: home.as_os_str(),
+                config_files: &config_files,
+                windows_mounts: &windows_mounts,
+            },
+        )
+        .unwrap()
+        .args
+        .iter()
+        .map(|arg| format!("ARG={}", arg.to_string_lossy()))
+        .collect::<Vec<_>>();
+        if enabled {
+            assert_eq!(&lines[2..lines.len() - 1], expected);
+            assert_eq!(lines.last().unwrap(), "LOG=present");
+            let log = std::fs::read_to_string(&fixture.log).unwrap();
+            assert!(log.contains("Codex invocation: True\n"));
+            assert!(log.contains("Sandbox CWD: /work\n"));
+            assert!(log.contains("Tmpfs inserted: True\n"));
+        } else {
+            assert_eq!(&lines[2..], expected);
+            assert!(!fixture.log.parent().unwrap().exists());
+        }
+    }
 }
 
 #[test]
 fn missing_home_relative_workspace_and_log_failure_never_execute() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let mut missing_home = fixture.command(&["--", "/bin/true"]);
     missing_home.env_remove("HOME");
     let output = missing_home.output().unwrap();
@@ -307,6 +599,7 @@ fn path_skips_self_aliases_and_invalid_candidates() {
 #[test]
 fn logging_failure_stops_before_attempting_the_default_real_executable() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let blocker = fixture.temp.path("not-a-directory");
     std::fs::write(&blocker, "file").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_bwrap"));
@@ -324,6 +617,7 @@ fn logging_failure_stops_before_attempting_the_default_real_executable() {
 #[test]
 fn empty_log_value_fails() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let mut command = fixture.command(&["--", "/bin/true"]);
     command.env("BWRAP_LOG", "");
     assert!(!command.output().unwrap().status.success());
@@ -334,6 +628,7 @@ fn empty_log_value_fails() {
 fn non_utf8_arguments_fail_logging_before_exec_like_python() {
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let mut command = fixture.command(&[]);
     command.arg(OsString::from_vec(vec![b'x', 0xff, b'y']));
     let output = command.output().unwrap();
@@ -384,6 +679,7 @@ fn timestamps_have_iso_offsets_and_python_booleans() {
         ("XST-0:00:30", "+00:00:30"),
     ] {
         let fixture = Fixture::new();
+        fixture.enable_logging();
         let mut command = fixture.command(&["Unicode: 日本語", "a'b", "line\nbreak"]);
         command.env("TZ", timezone);
         assert!(command.output().unwrap().status.success());
@@ -477,6 +773,7 @@ fn standard_input_is_inherited() {
 fn non_utf8_environment_values_prevent_execution_like_python() {
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let mut command = fixture.command(&[]);
     command.env("INVALID_VALUE", OsString::from_vec(vec![0xff]));
     assert!(!command.output().unwrap().status.success());
@@ -487,6 +784,7 @@ fn non_utf8_environment_values_prevent_execution_like_python() {
 fn missing_or_invalid_utf8_mount_tables_stop_before_logging_and_exec() {
     for invalid_utf8 in [false, true] {
         let fixture = Fixture::new();
+        fixture.enable_logging();
         let mut command =
             fixture.codex_command(&["--argv0", "codex-linux-sandbox", "--", "/opt/codex"]);
         let path = fixture.temp.path("mounts");
@@ -505,6 +803,7 @@ fn missing_or_invalid_utf8_mount_tables_stop_before_logging_and_exec() {
 #[test]
 fn current_helper_logs_recognition_and_home_insertion() {
     let fixture = Fixture::new();
+    fixture.enable_logging();
     let args: Vec<_> = include_str!("fixtures/current-sandbox.txt")
         .lines()
         .collect();
