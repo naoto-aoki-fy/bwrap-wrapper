@@ -298,49 +298,85 @@ fn all_workspace_protections_removed_for_both_invocations_and_workspace_formats(
 }
 
 #[test]
+fn tmp_protections_removed_with_or_without_workspace_and_preserve_command_tail() {
+    for current_helper in [false, true] {
+        for policy in [
+            vec![],
+            strings(&["--sandbox-policy-cwd="]),
+            strings(&["--sandbox-policy-cwd", "/work/project"]),
+            strings(&["--sandbox-policy-cwd=/tmp"]),
+        ] {
+            for name in [".git", ".agents", ".codex", ".aws"] {
+                for group in protection_groups(&format!("/tmp/{name}")) {
+                    let mut tail = policy.clone();
+                    tail.extend(strings(&[
+                        "--permission-profile",
+                        r#"{ "permissions": ["workspace-write"], "note": "a\\b" }"#,
+                    ]));
+                    // Include identical groups in both the helper options and
+                    // nested command arguments; everything after the first -- stays.
+                    tail.extend_from_slice(&group);
+                    tail.extend(strings(&["--", "/bin/sh", "-c", "echo test"]));
+                    tail.extend_from_slice(&group);
+                    tail.push(OsString::from_vec(b"raw\xff".to_vec()));
+                    let args = sandbox_invocation(&group, &tail, current_helper);
+                    let out = rewrite(&args);
+                    assert_eq!(
+                        out.args,
+                        sandbox_invocation(&[], &tail, current_helper),
+                        "{args:?}"
+                    );
+                    assert!(!out.home_inserted);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn mixed_adjacent_and_repeated_protections_preserve_other_transformations() {
     let mut before = strings(&["--dev", "/dev", "--bind", "/work/project", "/work/project"]);
-    for _ in 0..2 {
-        before.extend(strings(&[
-            "--ro-bind",
-            "/work/project/.git",
-            "/work/project/.git",
-            "--ro-bind",
-            "/work/project/.agents",
-            "/work/project/.agents",
-            "--perms",
-            "555",
-            "--tmpfs",
-            "/work/project/.codex",
-            "--remount-ro",
-            "/work/project/.codex",
-            "--perms",
-            "555",
-            "--tmpfs",
-            "/work/project/.aws",
-            "--remount-ro",
-            "/work/project/.aws",
-            "--tmpfs",
-            "/work/project/.aws",
-            "--remount-ro",
-            "/work/project/.aws",
-        ]));
+    let mut retained = strings(&["--bind", "/tmp", "/tmp"]);
+    before.extend_from_slice(&retained);
+    for suffix in ["1000", "2048", "arbitrary"] {
+        for base in ["/work/project", "/tmp"] {
+            for name in [".git", ".agents", ".codex", ".aws"] {
+                for group in protection_groups(&format!("{base}/{name}")) {
+                    before.extend(group);
+                }
+            }
+            let daemon = format!("/tmp/codex-daemon-{suffix}");
+            let mask = strings(&[
+                "--perms",
+                "000",
+                "--tmpfs",
+                &daemon,
+                "--remount-ro",
+                &daemon,
+            ]);
+            before.extend_from_slice(&mask);
+            retained.extend(mask);
+        }
+        let synthetic = format!("/tmp/codex-bwrap-synthetic-mount-targets-{suffix}");
+        let bind = strings(&["--ro-bind", &synthetic, &synthetic]);
+        before.extend_from_slice(&bind);
+        retained.extend(bind);
     }
-    let mut retained = vec![];
+    let mut unrelated = vec![];
     for path in [
-        "/tmp/.git",
-        "/tmp/.agents",
-        "/tmp/.codex",
-        "/tmp/.aws",
-        "/tmp/codex-daemon-1000",
+        "/other/.git",
+        "/other/.agents",
+        "/other/.codex",
+        "/other/.aws",
         "/tmp/codex-mount-targets",
     ] {
         for group in protection_groups(path) {
-            retained.extend(group);
+            unrelated.extend(group);
         }
     }
-    retained.extend(strings(&["--perms", "700", "--dir", "/unrelated"]));
-    before.extend_from_slice(&retained);
+    unrelated.extend(strings(&["--perms", "700", "--dir", "/unrelated"]));
+    before.extend_from_slice(&unrelated);
+    retained.extend(unrelated);
     let tail = strings(&["--sandbox-policy-cwd", "/work/project"]);
     let args = sandbox_invocation(&before, &tail, true);
     let out = transform::transform(
@@ -369,18 +405,24 @@ fn mixed_adjacent_and_repeated_protections_preserve_other_transformations() {
 }
 
 #[test]
-fn workspace_protection_matching_preserves_near_matches_and_different_operands() {
-    for name in [".git", ".agents", ".codex", ".aws"] {
-        let target = format!("/work/project/{name}");
+fn protection_matching_preserves_near_matches_and_different_operands() {
+    for (base, name) in ["/work/project", "/tmp"]
+        .into_iter()
+        .flat_map(|base| [".git", ".agents", ".codex", ".aws"].map(|name| (base, name)))
+    {
+        let target = format!("{base}/{name}");
         for path in [
-            format!("/tmp/{name}"),
+            format!("/other/{name}"),
             format!("{target}-backup"),
             format!("{target}/child"),
             format!("{target}/"),
-            format!("/work/project/subdir/{name}"),
-            format!("/work/project/./{name}"),
-            format!("/work/project//{name}"),
-            format!("/work/project/subdir/../{name}"),
+            format!("{base}/subdir/{name}"),
+            format!("{base}/./{name}"),
+            format!("{base}//{name}"),
+            format!("{base}/subdir/../{name}"),
+            format!("/{base}/{name}"),
+            format!("/var/tmp/{name}"),
+            format!("$TMPDIR/{name}"),
         ] {
             for group in protection_groups(&path) {
                 let args = sandbox_invocation(
@@ -420,8 +462,10 @@ fn workspace_protection_matching_preserves_near_matches_and_different_operands()
 
 #[test]
 fn incomplete_protection_groups_are_preserved_without_crossing_separator() {
-    for name in [".git", ".agents", ".codex", ".aws"] {
-        let target = format!("/work/project/{name}");
+    for target in ["/work/project", "/tmp"]
+        .into_iter()
+        .flat_map(|base| [".git", ".agents", ".codex", ".aws"].map(|name| format!("{base}/{name}")))
+    {
         for group in protection_groups(&target) {
             for len in 1..group.len() {
                 let args = sandbox_invocation(
@@ -463,7 +507,13 @@ fn workspace_protections_require_codex_and_a_valid_workspace() {
         .flat_map(|name| protection_groups(&format!("/work/project/{name}")))
         .flatten()
         .collect();
+    let tmp_groups: Vec<_> = [".git", ".agents", ".codex", ".aws"]
+        .into_iter()
+        .flat_map(|name| protection_groups(&format!("/tmp/{name}")))
+        .flatten()
+        .collect();
     let mut non_codex = groups.clone();
+    non_codex.extend_from_slice(&tmp_groups);
     non_codex.extend(strings(&[
         "--",
         "/bin/true",
@@ -475,8 +525,10 @@ fn workspace_protections_require_codex_and_a_valid_workspace() {
             let args = sandbox_invocation(&groups, &policy, current_helper);
             assert_eq!(rewrite(&args).args, args);
         }
+        let mut invalid_workspace_groups = groups.clone();
+        invalid_workspace_groups.extend_from_slice(&tmp_groups);
         let args = sandbox_invocation(
-            &groups,
+            &invalid_workspace_groups,
             &strings(&["--sandbox-policy-cwd=relative"]),
             current_helper,
         );

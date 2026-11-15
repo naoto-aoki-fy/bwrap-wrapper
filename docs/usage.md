@@ -69,8 +69,10 @@ The original policy arguments remain forwarded as supplied.
 Only recognized Codex calls receive these changes before the command separator:
 
 - `--dev /dev` becomes `--dev-bind /dev /dev`. Other device arguments stay intact.
-- For each direct workspace path `P` in `WORKSPACE/.git`, `WORKSPACE/.agents`,
-  `WORKSPACE/.codex`, and `WORKSPACE/.aws`, remove every exact protection group:
+- For each target path `P`, remove every exact protection group. Targets are
+  `WORKSPACE/.git`, `WORKSPACE/.agents`, `WORKSPACE/.codex`, and `WORKSPACE/.aws`
+  when a workspace is specified, plus the fixed absolute paths `/tmp/.git`,
+  `/tmp/.agents`, `/tmp/.codex`, and `/tmp/.aws`:
 
   ```text
   --ro-bind P P
@@ -82,13 +84,20 @@ Only recognized Codex calls receive these changes before the command separator:
   its adjacent matching read-only remount, including the associated `--perms MODE`
   prefix when present. Incomplete groups are retained; matching never crosses
   the command separator. Other permission modifiers and mounts stay intact.
-  Targets use the normalized workspace, but mount operands are compared byte for
-  byte, without normalization or symlink resolution. Out-of-workspace paths,
-  nested paths such as `WORKSPACE/subdir/.aws`, and near matches such as
-  `WORKSPACE/.codex-backup` or spellings with redundant dots or slashes remain.
-  These four paths inherit access from the workspace mount. This changes only
-  forwarded arguments; no directories or configuration files are deleted or
-  modified on disk. The expanded targets and tmpfs removal are an intentional
+  Workspace targets use the normalized workspace, but mount operands are compared
+  byte for byte, without normalization or symlink resolution. The fixed `/tmp`
+  targets apply regardless of workspace location, including when no workspace is
+  specified; an invalid workspace still fails. `/tmp` is literal, independent of
+  `$TMPDIR`. When the workspace is `/tmp`, the overlapping targets use the same
+  rules. Other paths, nested paths such as `/tmp/subdir/.aws`, and near matches
+  such as `/tmp/.aws-backup` or spellings with redundant dots or slashes remain.
+  The workspace or `/tmp` mount supplies access to these paths. In particular,
+  `--bind /tmp /tmp`, daemon masks such as
+  `--perms 000 --tmpfs /tmp/codex-daemon-1000 --remount-ro /tmp/codex-daemon-1000`,
+  and binds of `/tmp/codex-bwrap-synthetic-mount-targets-1000` remain intact,
+  regardless of their suffixes. This changes only forwarded arguments; no
+  directories or configuration files are deleted or modified on disk.
+  The expanded targets and tmpfs removal are an intentional
   [change from the Python reference](compatibility.md#project-local-mount-protections).
 - Before the first exact `--bind WORKSPACE WORKSPACE`, insert this sequence:
 
@@ -118,11 +127,11 @@ Only recognized Codex calls receive these changes before the command separator:
   name, so nested mounts follow their ancestors. A mount-table read or UTF-8
   decoding failure aborts. An ordinary Linux machine may have no such mounts.
 
-These changes expose the host's `/dev`, remove the four project-local mount
-protections above, hide HOME behind tmpfs with selected Codex paths re-exposed, make Codex
-memories writable, and overlay detected Windows-drive mounts. They preserve the
-remaining mount policy, with optional missing sources tolerated. No additional
-filtering or mount validation is applied.
+These changes expose the host's `/dev`, remove the workspace and fixed `/tmp`
+mount protections above, hide HOME behind tmpfs with selected Codex paths
+re-exposed, make Codex memories writable, and overlay detected Windows-drive
+mounts. They preserve the remaining mount policy, with optional missing sources
+tolerated. No additional filtering or mount validation is applied.
 
 The rewrite loop retains the reference's malformed-option behavior. For example,
 `--bind SOURCE --` consumes the separator as a destination; a consumed separator

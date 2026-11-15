@@ -84,10 +84,18 @@ is unchanged. Real mount behavior is covered by the opt-in isolation suite.
 
 Rust intentionally extends the reference's removal of exact project-local `.git`
 read-only binds to `.agents`, `.codex`, and `.aws` directly under the workspace.
-For all four targets `P`, it also removes complete `--tmpfs P --remount-ro P`
-groups, including an immediately preceding `--perms MODE` when present. The
-Python reference removes only `--ro-bind WORKSPACE/.git WORKSPACE/.git` and is
-unchanged. These paths now inherit the workspace mount's access; no on-disk
+It also removes protections for the exact absolute paths `/tmp/.git`,
+`/tmp/.agents`, `/tmp/.codex`, and `/tmp/.aws`. These fixed targets apply to
+recognized Codex calls independently of the workspace, including an unspecified
+workspace; an invalid workspace still fails. This intentionally supersedes the
+earlier preservation of these four `/tmp` paths. `/tmp` is literal and does not
+follow `$TMPDIR`.
+
+For every target `P`, Rust removes exact `--ro-bind P P` and complete
+`--tmpfs P --remount-ro P` groups, including an immediately preceding
+`--perms MODE` when present. The Python reference removes only
+`--ro-bind WORKSPACE/.git WORKSPACE/.git` and is
+unchanged. These paths inherit the workspace or `/tmp` mount's access; no on-disk
 directories or configuration files are changed by this argument rewrite.
 
 Shared matching uses the existing normalized workspace and exact original mount
@@ -95,10 +103,13 @@ operand bytes. Both bind operands, or both tmpfs/remount operands, must equal th
 same target. Repeated and adjacent matches are removed before the first command
 separator; incomplete and nonmatching groups remain. Detection and workspace
 extraction retain their rules for both Codex invocation formats. Regression tests
-cover all four names and protection variants, workspace option formats, unrelated
-permissions and mounts, near matches, and byte-preserved command tails including
-permission-profile JSON and non-UTF-8 arguments. Existing tests continue to cover
-HOME isolation, generated helper mounts, configuration overlays, and Windows drives.
+cover all four names under both roots and all protection variants, workspace
+option formats, missing workspaces, overlapping targets when the workspace is
+`/tmp`, unrelated permissions and mounts (including adjacent daemon masks with
+`--perms 000` and synthetic targets), near matches, and byte-preserved command
+tails including permission-profile JSON and non-UTF-8 arguments. Existing tests
+continue to cover HOME isolation, generated helper mounts, configuration overlays,
+and Windows drives.
 
 ## Test commands
 

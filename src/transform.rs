@@ -143,7 +143,7 @@ pub fn transform(args: &[OsString], inputs: &Inputs<'_>) -> Result<Output, Relat
 
 /// Match complete protection groups using original operand bytes. The caller
 /// supplies only Bubblewrap options, so a group cannot cross the separator.
-fn workspace_protection_len(args: &[OsString], targets: &[OsString]) -> Option<usize> {
+fn protection_group_len(args: &[OsString], targets: &[OsString]) -> Option<usize> {
     let (prefix_len, mount) = match args {
         [option, _, rest @ ..] if option == "--perms" => (2, rest),
         _ => (0, args),
@@ -188,10 +188,11 @@ pub fn transform_with_discovery<E>(
         return Ok(out);
     }
     out.workspace = workspace(args).map_err(DiscoveryError::Workspace)?;
-    let targets = out
-        .workspace
-        .as_deref()
-        .map(|w| [".git", ".agents", ".codex", ".aws"].map(|name| join(w, OsStr::new(name))));
+    let mut targets = Vec::new();
+    for base in std::iter::once(OsStr::new("/tmp")).chain(out.workspace.as_deref()) {
+        targets
+            .extend([".git", ".agents", ".codex", ".aws"].map(|name| join(base, OsStr::new(name))));
+    }
     let options_end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let mut i = 0;
     while i < args.len() {
@@ -203,9 +204,9 @@ pub fn transform_with_discovery<E>(
             out.args.extend_from_slice(&args[i..]);
             break;
         }
-        let protection_len = targets
-            .as_ref()
-            .and_then(|targets| workspace_protection_len(args.get(i..options_end)?, targets));
+        let protection_len = args
+            .get(i..options_end)
+            .and_then(|options| protection_group_len(options, &targets));
         if let Some(len) = protection_len {
             i += len;
             continue;
