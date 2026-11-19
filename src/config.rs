@@ -4,18 +4,40 @@ use serde::Deserialize;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub logging: Logging,
+    pub codex: Codex,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Logging {
     pub enabled: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Codex {
+    pub extra_read_only_dirs: Vec<PathBuf>,
+}
+
+fn parse_settings(contents: &str, home: &OsStr) -> Result<Settings, String> {
+    let mut settings: Settings = toml::from_str(contents).map_err(|error| error.to_string())?;
+    for dir in &mut settings.codex.extra_read_only_dirs {
+        if let Ok(suffix) = dir.strip_prefix("~") {
+            *dir = Path::new(home).join(suffix);
+        }
+        if !dir.is_absolute() || dir.as_os_str().as_bytes().contains(&0) {
+            return Err(format!(
+                "codex.extra_read_only_dirs requires absolute or home-relative paths without NUL bytes: {dir:?}"
+            ));
+        }
+    }
+    Ok(settings)
 }
 
 /// `cwd` is the caller's absolute working directory, used like Path.absolute().
@@ -61,7 +83,7 @@ pub fn load(home: &OsStr, xdg_config_home: Option<&OsStr>) -> Result<Settings, S
             ));
         }
     };
-    toml::from_str(&contents).map_err(|error| {
+    parse_settings(&contents, home).map_err(|error| {
         format!(
             "invalid configuration file {}: {error}",
             path.to_string_lossy()

@@ -74,7 +74,7 @@ also disables logging. `logging.enabled` must be a boolean; strings such as
 `"true"` and numbers are invalid. Unsupported keys are ignored.
 
 Settings are read and validated before preparing any invocation log. An existing
-file that cannot be read, invalid TOML, or an incorrect type for a supported
+file that cannot be read, invalid TOML, or an invalid value for a supported
 setting produces a stderr diagnostic containing the configuration path and exits
 nonzero, without creating log artifacts or executing Bubblewrap.
 
@@ -84,6 +84,20 @@ directories are created, existing logs remain untouched, and empty or unusable
 `BWRAP_LOG` values do not prevent execution. Timestamp and username lookup and
 environment collection for logging are skipped. Wrapper errors still go to
 stderr, and the executed program retains its stdout and stderr.
+
+### Additional Codex directories
+
+List the directories to expose to Codex in `extra_read_only_dirs`:
+
+```toml
+[codex]
+extra_read_only_dirs = ["~/foobar", "/opt/shared/reference"]
+```
+
+Each entry must be an absolute path, `~`, or a path starting with `~/`. The
+wrapper expands `~` to `$HOME` and mounts each source read-only at the same
+absolute path inside the sandbox. An omitted key or an empty array adds no
+mounts. Bubblewrap skips missing sources.
 
 ## Codex invocation detection and workspace
 
@@ -162,18 +176,21 @@ Only recognized Codex calls receive these changes before the command separator:
   non-directory configuration paths add no mounts. Non-missing I/O errors abort.
   Relative configuration homes are made absolute from the current directory;
   `..` is retained and symlinks are not resolved.
-- Immediately before the separator, read `/proc/mounts` and insert
+- Near the separator, read `/proc/mounts` and insert
   `--tmpfs MOUNTPOINT` for each Windows drive detected as filesystem `9p` with
   the exact option `aname=drvfs` among comma/semicolon-separated options. Decode
   three-digit octal path escapes, remove duplicates, and sort by slash count then
   name, so nested mounts follow their ancestors. A mount-table read or UTF-8
   decoding failure aborts. An ordinary Linux machine may have no such mounts.
+- After the Windows-drive masks, insert a `--ro-bind-try` for each configured
+  `codex.extra_read_only_dirs` entry in array order. These mounts also apply
+  when no workspace bind is present.
 
 These changes expose the host's `/dev`, remove the workspace and fixed `/tmp`
 mount protections above, hide HOME behind tmpfs with selected Codex paths
-re-exposed, make Codex memories writable, and overlay detected Windows-drive
-mounts. They preserve the remaining mount policy, with optional missing sources
-tolerated. No additional filtering or mount validation is applied.
+re-exposed, make Codex memories writable, overlay detected Windows-drive mounts,
+and expose configured directories read-only. Optional missing sources are
+tolerated.
 
 The rewrite loop retains the reference's malformed-option behavior. For example,
 `--bind SOURCE --` consumes the separator as a destination; a consumed separator

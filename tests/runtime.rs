@@ -233,6 +233,10 @@ fn invalid_configuration_stops_before_log_preparation_and_exec() {
         "[logging]\nenabled = {}\n",
         "logging = false\n",
         "[[logging]]\nenabled = true\n",
+        "[codex]\nextra_read_only_dirs = '~/foobar'\n",
+        "[codex]\nextra_read_only_dirs = [false]\n",
+        "[codex]\nextra_read_only_dirs = ['relative/path']\n",
+        "[codex]\nextra_read_only_dirs = [\"/bad\\u0000path\"]\n",
     ] {
         let fixture = Fixture::new();
         fixture.write_config(contents);
@@ -506,6 +510,62 @@ fn codex_arguments_are_transformed_and_exit_status_propagates() {
             assert!(!fixture.log.parent().unwrap().exists());
         }
     }
+}
+
+#[test]
+fn extra_read_only_dirs_apply_only_to_codex_calls() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        "[codex]\nextra_read_only_dirs = ['~/foobar', '/mnt/d/reference files', '~/missing']\n",
+    );
+    let home = fixture.temp.path("home");
+    std::fs::create_dir(home.join("foobar")).unwrap();
+    let expected_mounts: Vec<_> = [
+        home.join("foobar"),
+        "/mnt/d/reference files".into(),
+        home.join("missing"),
+    ]
+    .into_iter()
+    .flat_map(|path| {
+        let arg = format!("ARG={}", path.display());
+        ["ARG=--ro-bind-try".to_owned(), arg.clone(), arg]
+    })
+    .collect();
+    let legacy = [
+        "--argv0",
+        "codex-linux-sandbox",
+        "--sandbox-policy-cwd=/work",
+        "--bind",
+        "/work",
+        "/work",
+        "--",
+        "/opt/codex",
+    ];
+    let current = ["--", "/opt/codex-linux-sandbox", "--", "/bin/true"];
+
+    for args in [&legacy[..], &current[..]] {
+        let output = fixture.codex_command(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let lines = fixture.lines();
+        let separator = lines.iter().position(|line| line == "ARG=--").unwrap();
+        let mounts_start = separator - expected_mounts.len();
+        assert_eq!(&lines[mounts_start..separator], expected_mounts);
+        assert_eq!(
+            &lines[mounts_start - 2..mounts_start],
+            ["ARG=--tmpfs", "ARG=/mnt/d"]
+        );
+        let command = args.iter().position(|arg| *arg == "--").unwrap();
+        let expected_tail: Vec<_> = args[command..]
+            .iter()
+            .map(|arg| format!("ARG={arg}"))
+            .collect();
+        assert_eq!(&lines[separator..], expected_tail);
+    }
+
+    let output = fixture.run(&["--", "/bin/true"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(&fixture.lines()[2..], ["ARG=--", "ARG=/bin/true"]);
+    assert!(!home.join("missing").exists());
 }
 
 #[test]

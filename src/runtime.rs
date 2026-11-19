@@ -79,9 +79,10 @@ fn run_with_mount_reader(
     } else {
         None
     };
-    let output = transform::transform_with_discovery(
+    let output = transform::transform_with_extra_dirs(
         original,
         &settings.home,
+        &config.codex.extra_read_only_dirs,
         || config::discover(&settings.home, settings.config_home.as_deref()),
         mount_reader,
     )

@@ -3,6 +3,7 @@ use crate::paths::{join, normalize};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 
 /// Discovery results supplied by the caller. Configuration files must be in name order;
 /// Windows mounts must already be deduplicated and ordered (see `mounts::parse`).
@@ -174,6 +175,16 @@ fn protection_group_len(args: &[OsString], targets: &[OsString]) -> Option<usize
 pub fn transform_with_discovery<E>(
     args: &[OsString],
     home: &OsStr,
+    config_files: impl FnMut() -> Result<Vec<OsString>, E>,
+    windows_mounts: impl FnMut() -> Result<Vec<OsString>, E>,
+) -> Result<Output, DiscoveryError<E>> {
+    transform_with_extra_dirs(args, home, &[], config_files, windows_mounts)
+}
+
+pub(crate) fn transform_with_extra_dirs<E>(
+    args: &[OsString],
+    home: &OsStr,
+    extra_read_only_dirs: &[PathBuf],
     mut config_files: impl FnMut() -> Result<Vec<OsString>, E>,
     mut windows_mounts: impl FnMut() -> Result<Vec<OsString>, E>,
 ) -> Result<Output, DiscoveryError<E>> {
@@ -200,6 +211,11 @@ pub fn transform_with_discovery<E>(
         if arg == "--" {
             for mount in windows_mounts().map_err(DiscoveryError::Discovery)? {
                 out.args.extend(["--tmpfs".into(), mount]);
+            }
+            for dir in extra_read_only_dirs {
+                let path = dir.as_os_str().to_owned();
+                out.args
+                    .extend(["--ro-bind-try".into(), path.clone(), path]);
             }
             out.args.extend_from_slice(&args[i..]);
             break;

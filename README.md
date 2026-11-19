@@ -22,6 +22,9 @@ When enabled, logs include the entire environment and can contain secrets;
 `BWRAP_LOG` overrides the log path without enabling logging.
 The wrapper searches PATH for the first executable `bwrap` other than itself.
 
+Use `codex.extra_read_only_dirs` to expose extra directories such as `~/foobar`
+to Codex. See [additional Codex directories](docs/usage.md#additional-codex-directories).
+
 - [Usage, environment variables, mount behavior, and logging](docs/usage.md)
 - [Safe smoke test using a fake executable](docs/smoke-test.md)
 - [Automated releases and musl binaries](docs/releases.md)
