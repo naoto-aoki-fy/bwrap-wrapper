@@ -1,0 +1,6 @@
+bwrap-wrapper
+Licensed under the Apache License, Version 2.0.
+
+This Python implementation is based on the bwrap-wrapper Rust revision
+1446c5f, itself a port of the original Apache-2.0 Python project at revision
+e614a089b80b6f7832edd66950bba8f06abe0040. Both are by Naoto Aoki.
