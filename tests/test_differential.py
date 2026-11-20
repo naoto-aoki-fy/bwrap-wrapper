@@ -8,7 +8,7 @@ import signal
 import tempfile
 import unittest
 
-from tests.support import ROOT, PYTHON, FakeRuntime, executable, install_both
+from tests.support import ROOT, PYTHON, FakeRuntime, executable, install_wrapper
 from tests.test_transform import codex
 
 
@@ -24,7 +24,7 @@ class DifferentialTests(unittest.TestCase):
     def setUpClass(cls):
         temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(temp.cleanup)
-        cls.launchers = install_both(Path(temp.name))
+        cls.python = (install_wrapper(Path(temp.name)),)
         cls.rust = (Path(os.environ["BWRAP_RUST_BIN"]).absolute(),)
         cls.rust_driver = (Path(os.environ["BWRAP_RUST_DRIVER"]).absolute(),)
         cls.python_driver = (PYTHON, "-ISBXutf8", ROOT / "tests/mount_driver.py")
@@ -65,9 +65,7 @@ class DifferentialTests(unittest.TestCase):
         env = dict(runtime.env if env is None else env)
         if synthetic:
             env["BWRAP_TEST_MOUNTS"] = str(self.mounts)
-        launchers = [self.rust_driver, self.python_driver] if synthetic else [
-            self.rust, *((launcher,) for launcher in self.launchers),
-        ]
+        launchers = (self.rust_driver, self.python_driver) if synthetic else (self.rust, self.python)
 
         results = []
         for launcher in launchers:

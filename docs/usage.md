@@ -1,51 +1,36 @@
 # Installation and usage
 
-The wrapper uses Python's standard library. Install one of the variants
-below in a separate directory and keep the real Bubblewrap on `PATH`.
-Run the installation commands from the project root.
+The wrapper requires Linux or WSL2, CPython 3.9 or newer, and a working
+Bubblewrap. Use `uv` to install it. Source builds require `cc` or the C
+compiler named by `CC`.
 
-## Single executable archive
+## Installation
 
-```sh
-wrapper_bin="$HOME/.local/lib/bwrap-wrapper/bin"
-python3.9 build_zipapp.py --output-dir "$wrapper_bin"
-export PATH="$wrapper_bin:$PATH"
-```
-
-The builder uses the absolute interpreter path of the Python running it.
-Pass `--python /opt/python/bin/python3.14` to select a different interpreter.
-Use an absolute path without whitespace. The result is one executable named
-`bwrap`. It also works through a symlink or a hard link in another directory.
-[Python zipapp documentation](https://docs.python.org/3.9/library/zipapp.html)
-
-## Source launcher
+Run these commands from the project root.
 
 ```sh
-wrapper_bin="$HOME/.local/lib/bwrap-wrapper/bin"
-install -d "$wrapper_bin/bwrap_wrapper"
-install -m 755 bwrap "$wrapper_bin/bwrap"
-install -m 644 bwrap_wrapper/*.py "$wrapper_bin/bwrap_wrapper/"
-export PATH="$wrapper_bin:$PATH"
+uv tool install .
+export PATH="$(uv tool dir --bin):$PATH"
+command -v bwrap
 ```
 
-The launcher loads its modules from the resolved script directory. Keep the
-modules adjacent to the script. The first line defaults to
-`#!/usr/bin/python3.9 -ISBXutf8`. To change interpreters, replace only
-`/usr/bin/python3.9` on that line with the absolute path to the interpreter.
+`command -v bwrap` should show `bwrap` in the uv tool bin directory. Keep
+the real Bubblewrap later in `PATH`, such as `/usr/bin/bwrap`. You can then
+run `bwrap` from any working directory. Pass `--python 3.14` to `uv tool install`
+to select a specific CPython version. [uv tool installation](https://docs.astral.sh/uv/guides/tools/#installing-tools)
 
-Both variants start Python in isolated mode with site initialization disabled
-and UTF-8 filesystem decoding. When invoked, the wrapper picks the first
-executable regular file named `bwrap` on `PATH`. It compares device and inode to
-skip links to itself and uses a shared marker to skip other installations of
-the Python wrapper. Relative entries use the working directory, as do empty
-entries. An unset `PATH` or a search with no suitable candidate causes an error.
+The launcher starts Python from the tool environment in isolated mode with
+site initialization disabled and UTF-8 filesystem decoding. The wrapper
+picks the first executable regular file named `bwrap` on `PATH` after skipping
+links to itself and marked wrapper installations, including previous releases.
+Relative and empty entries are resolved from the working directory. An unset
+`PATH` or a search with no suitable candidate causes an error.
 
 ## Settings
 
 The wrapper reads UTF-8 JSON from
 `${XDG_CONFIG_HOME:-$HOME/.config}/bwrap-wrapper/config.json`. Relative config
 roots are anchored to the working directory, retaining `..` and symlinks.
-Settings apply to both installation variants.
 
 ```json
 {

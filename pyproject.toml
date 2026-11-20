@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.26.3"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bwrap-wrapper"
+version = "0.1.0"
+description = "Bubblewrap wrapper for Codex on Linux and WSL2"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/bwrap_wrapper",
+    "/docs",
+    "/hatch_build.py",
+    "/launcher.c",
+    "/pyproject.toml",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["bwrap_wrapper"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]

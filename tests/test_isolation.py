@@ -7,7 +7,7 @@ import tempfile
 import subprocess
 import unittest
 
-from tests.support import executable, install_both
+from tests.support import executable, install_wrapper
 
 HELPER = """#!/bin/sh
 while [ "$#" -gt 0 ]; do
@@ -76,7 +76,7 @@ class IsolationTests(unittest.TestCase):
             raise unittest.SkipTest("set BWRAP_ISOLATION_CURRENT or BWRAP_ISOLATION_LEGACY")
         temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(temp.cleanup)
-        cls.launchers = install_both(Path(temp.name))
+        cls.launcher = install_wrapper(Path(temp.name))
 
     def test_current_format(self):
         self.run_matrix("BWRAP_ISOLATION_CURRENT", legacy=False)
@@ -90,13 +90,12 @@ class IsolationTests(unittest.TestCase):
             self.skipTest(f"set {variable} to the real Bubblewrap executable")
         self.assertTrue(os.path.isabs(real) and os.path.isfile(real) and os.access(real, os.X_OK),
                         f"{variable} requires the absolute path of an executable Bubblewrap")
-        for launcher in self.launchers:
-            for nested in (False, True):
-                for present in range(8):
-                    with self.subTest(launcher=launcher.parent.name, nested=nested, present=present):
-                        self.run_case(launcher, real, legacy, nested, present)
+        for nested in (False, True):
+            for present in range(8):
+                with self.subTest(nested=nested, present=present):
+                    self.run_case(real, legacy, nested, present)
 
-    def run_case(self, launcher, real, legacy, nested, present):
+    def run_case(self, real, legacy, nested, present):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(os.path.realpath(temp))
             home = root / "home"
@@ -154,13 +153,13 @@ class IsolationTests(unittest.TestCase):
             args.extend(("--", helper, "--sandbox-policy-cwd", workspace,
                          "--", "/bin/sh", "-eu", "-c", PROBE))
             env = {
-                "PATH": f"{launcher.parent}:{real_dir}:/usr/bin:/bin",
+                "PATH": f"{self.launcher.parent}:{real_dir}:/usr/bin:/bin",
                 "HOME": str(home), "WORKSPACE": str(workspace), "OTHER": str(other),
                 "EXTRA": str(extra), "GENERATED": generated, "LC_ALL": "C",
                 "PACKAGES": str(present & 1), "MEMORIES": str((present >> 1) & 1),
                 "AGENTS": str((present >> 2) & 1),
             }
-            result = subprocess.run([launcher, *args], env=env, capture_output=True,
+            result = subprocess.run([self.launcher, *args], env=env, capture_output=True,
                                     cwd=root, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
             self.assertEqual(result.stdout, b"isolation-ok\n")

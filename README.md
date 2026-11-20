@@ -1,18 +1,20 @@
 # bwrap-wrapper
 
-A standalone Python wrapper for Bubblewrap on Linux and WSL2. It adjusts Codex
-sandbox mounts and forwards other invocations unchanged. Requires CPython 3.9 or
-newer and a working Bubblewrap.
+A Python wrapper for Bubblewrap on Linux and WSL2. It adjusts Codex sandbox
+mounts and forwards other invocations unchanged. Requires CPython 3.9 or newer,
+`uv`, and a working Bubblewrap. Installing from source also requires a C compiler.
 
-To install the single-file executable, run these commands from the checkout.
+Run these commands from the checkout.
 
 ```sh
-python3.9 build_zipapp.py --output-dir "$HOME/.local/lib/bwrap-wrapper/bin"
-export PATH="$HOME/.local/lib/bwrap-wrapper/bin:$PATH"
+uv tool install .
+export PATH="$(uv tool dir --bin):$PATH"
+command -v bwrap
 ```
 
-Keep the real Bubblewrap later in `PATH`.
+Verify that `command -v bwrap` shows the wrapper in uv's tool bin directory.
+Keep the real Bubblewrap later in `PATH`. You can run `bwrap` from any directory.
 
-- [Installation options, settings, and mount behavior](docs/usage.md)
+- [Installation, settings, and mount behavior](docs/usage.md)
 - [Smoke test, Rust comparison, and real isolation checks](docs/verification.md)
 - [Apache-2.0 license](LICENSE) and [original attribution](NOTICE)

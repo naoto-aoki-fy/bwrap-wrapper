@@ -2,32 +2,33 @@
 
 ## Smoke test with a fake executable
 
-Run this from the project root. It installs both variants into a temporary
-directory and uses a fake `bwrap` that prints one bracketed line per argument.
+Run this from the project root. It installs the wrapper into a temporary uv
+tool environment and runs it outside the checkout with a fake `bwrap` that
+prints one bracketed line per argument.
 
 ```sh
 (
     set -eu
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
-    mkdir -p "$work/real" "$work/home" "$work/source/bwrap_wrapper"
-    install -m 755 bwrap "$work/source/bwrap"
-    install -m 644 bwrap_wrapper/*.py "$work/source/bwrap_wrapper/"
-    /usr/bin/python3.9 build_zipapp.py --output-dir "$work/archive"
+    mkdir -p "$work/real" "$work/home"
+    export UV_TOOL_DIR="$work/tools" UV_TOOL_BIN_DIR="$work/bin"
+    uv tool install --python 3.9 .
     cat > "$work/real/bwrap" <<'FAKE'
 #!/bin/sh
 printf '<%s>\n' "$@"
 FAKE
     chmod 755 "$work/real/bwrap"
-    for launcher in "$work/source/bwrap" "$work/archive/bwrap"; do
-        HOME="$work/home" PATH="$work/source:$work/archive:$work/real" \
-            "$launcher" --dev /dev 'two words' ''
-    done
+    cd "$work"
+    export HOME="$work/home" PATH="$work/bin:$work/real:$PATH"
+    command -v bwrap
+    bwrap --dev /dev 'two words' ''
 )
 ```
 
-Each run prints these same four lines. The arguments have no Codex command
-separator, so they pass through as supplied.
+After the installed executable path, expect these four lines. The arguments
+have no Codex command separator, so they pass through as supplied. Repeat
+with `--python 3.14` to check the other interpreter.
 
 ```text
 <--dev>
@@ -36,6 +37,27 @@ separator, so they pass through as supplied.
 <>
 ```
 
+## Distribution build and wheel installation
+
+```sh
+(
+    set -eu
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    uv build --out-dir "$work/dist"
+    export UV_TOOL_DIR="$work/tools" UV_TOOL_BIN_DIR="$work/bin"
+    uv tool install "$work"/dist/*.whl
+    cd "$work"
+    export PATH="$work/bin:$PATH"
+    command -v bwrap
+    bwrap --version
+)
+```
+
+`uv build` creates a source distribution and builds the wheel from it. The
+wheel contains the native launcher for the build platform. Installation
+from a compatible wheel requires no compiler. [Hatchling wheel builder](https://hatch.pypa.io/dev/plugins/builder/wheel/)
+
 ## Ordinary tests
 
 ```sh
@@ -43,9 +65,10 @@ python3.9 -m unittest -v
 python3.14 -m unittest -v
 ```
 
-These tests use fake executables, synthetic files, and injected mount readers.
-No namespace support is required. The Rust comparisons and real isolation
-checks are opt-in.
+The runtime tests install `bwrap` with `uv tool install .` using the CPython
+version running the suite. They use fake executables, synthetic files, and
+injected mount readers. No namespace support is required. The Rust
+comparisons and real isolation checks are opt-in.
 
 ## Rust differential tests
 
@@ -69,11 +92,12 @@ clean.
 )
 ```
 
-The shared fixtures use equivalent JSON and TOML settings and the same
-synthetic mount table and fake executable. The tests compare forwarded
-bytes, exit or signal outcomes, and complete successful logs with only the
-timestamp and PID normalized. Failure cases check diagnostic categories
-and which log artifacts were created.
+The comparisons run the installed Python `bwrap` and the Rust `bwrap`.
+The shared fixtures use equivalent JSON and TOML settings and the same fake
+executable. Separate test drivers inject a synthetic mount table. The tests
+compare forwarded bytes, exit or signal outcomes, and complete successful
+logs with only the timestamp and PID normalized. Failure cases check
+diagnostic categories and which log artifacts were created.
 
 ## Real mount isolation
 
@@ -90,10 +114,10 @@ BWRAP_ISOLATION_LEGACY=/absolute/path/to/compatible/bwrap \
     python3.9 -m unittest -v tests.test_isolation
 ```
 
-Set both variables to run both formats together. Each format runs against
-both launcher variants and workspaces inside and outside HOME, with all
+Set both variables to run both formats together. Each format runs through
+the installed `bwrap` with workspaces inside and outside HOME and all
 eight combinations of packages, memories, and `AGENTS.md` present or absent.
-That is 32 cases per format. Fixtures are synthetic, with a read-only root
+That is 16 cases per format. Fixtures are synthetic, with a read-only root
 mount and writable binds into temporary directories. The checks cover HOME
 hiding, generated helper execution and directory permissions, optional
 sources, workspace writes, overlays, configured extra directories, and

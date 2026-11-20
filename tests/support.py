@@ -1,11 +1,8 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
-
-from build_zipapp import build
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
@@ -17,21 +14,14 @@ def executable(path, contents):
     return path
 
 
-def install_source(output):
-    output.mkdir()
-    shutil.copytree(ROOT / "bwrap_wrapper", output / "bwrap_wrapper",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    _, body = (ROOT / "bwrap").read_bytes().split(b"\n", 1)
-    source = output / "bwrap"
-    source.write_bytes(os.fsencode(f"#!{PYTHON} -ISBXutf8\n") + body)
-    source.chmod(0o755)
-    return source
-
-
-def install_both(output):
-    source = install_source(output / "source")
-    archive = build(output / "archive", PYTHON)
-    return source, archive
+def install_wrapper(output):
+    bin_dir = output / "bin"
+    env = dict(os.environ, UV_TOOL_DIR=str(output / "tools"), UV_TOOL_BIN_DIR=str(bin_dir))
+    result = subprocess.run(["uv", "tool", "install", "--python", PYTHON, "."], cwd=ROOT,
+                            env=env, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise RuntimeError(f"uv tool install failed:\n{result.stderr}")
+    return bin_dir / "bwrap"
 
 
 class FakeRuntime:

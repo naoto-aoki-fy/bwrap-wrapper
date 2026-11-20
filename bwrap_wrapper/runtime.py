@@ -8,7 +8,8 @@ import sys
 from . import config, mounts, transform
 from .invocation_log import InvocationLog
 
-LAUNCHER_MARKER = b"# bwrap-wrapper Python launcher\n"
+NATIVE_LAUNCHER_MARKER = b"\0bwrap-wrapper native launcher\0"
+LEGACY_LAUNCHER_MARKER = b"# bwrap-wrapper Python launcher\n"
 
 
 def _restore_locale_environment():
@@ -27,15 +28,19 @@ def _restore_locale_environment():
             os.environb[b"LC_CTYPE"] = original
 
 
-def _is_python_launcher(path):
+def _is_wrapper_launcher(path):
     try:
         # A candidate can be replaced after stat. Avoid blocking if it becomes a FIFO.
         with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as candidate:
-            shebang = candidate.readline(256)
-            return (shebang.startswith(b"#!")
-                    and candidate.read(len(LAUNCHER_MARKER)) == LAUNCHER_MARKER)
+            header = candidate.readline(256)
+            if header.startswith(b"#!"):
+                return candidate.read(len(LEGACY_LAUNCHER_MARKER)) == LEGACY_LAUNCHER_MARKER
+            if header.startswith(b"\x7fELF"):
+                candidate.seek(-len(NATIVE_LAUNCHER_MARKER), os.SEEK_END)
+                return candidate.read(len(NATIVE_LAUNCHER_MARKER)) == NATIVE_LAUNCHER_MARKER
     except OSError:
-        return False
+        pass
+    return False
 
 
 def find_bwrap(launcher):
@@ -53,7 +58,7 @@ def find_bwrap(launcher):
         except OSError:
             continue
         if (stat.S_ISREG(metadata.st_mode) and not os.path.samestat(metadata, own)
-                and os.access(candidate, os.X_OK) and not _is_python_launcher(candidate)):
+                and os.access(candidate, os.X_OK) and not _is_wrapper_launcher(candidate)):
             return candidate
     raise ValueError("no executable bwrap other than this wrapper found in PATH")
 
