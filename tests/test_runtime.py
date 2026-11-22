@@ -44,12 +44,14 @@ class RuntimeTests(unittest.TestCase):
                 result = self.runtime.command([command], ["--version"], env=env)
                 self.assertEqual((result.returncode, result.stdout, result.stderr),
                                  (0, b"--version\0", b""))
+        self.assertFalse((self.runtime.home / ".cache").exists())
 
     def test_installed_launcher_applies_codex_rewrite(self):
         workspace = "/workspace"
         protected = "/workspace/.git"
         policy = "--sandbox-policy-cwd=/a/../workspace/"
         args = [
+            "--ro-bind", "/", "/", "--bind", "/tmp", "/tmp",
             "--dev", "/dev", "--ro-bind", protected, protected,
             "--bind", workspace, workspace,
             # Keep the fixture independent of host mounts by consuming the separator.
@@ -62,17 +64,39 @@ class RuntimeTests(unittest.TestCase):
         packages = home + "/.codex/packages"
         memories = home + "/.codex/memories"
         agents = home + "/.codex/AGENTS.md"
-        expected = [
-            "--dev-bind", "/dev", "/dev",
-            "--tmpfs", home, "--dir", home + "/.codex",
-            "--ro-bind-try", packages, packages, "--bind-try", memories, memories,
-            "--ro-bind-try", agents, agents,
-            "--bind", workspace, workspace, "--ro-bind", str(overlay), "/workspace/example",
-            "--bind", "source", "--", "/bin/codex-linux-sandbox", policy,
-        ]
+        cache = self.runtime.home / ".cache/codex/tmp/workspace"
+        marker = cache / "kept"
+        for attempt in range(2):
+            result = self.runtime.command([self.launcher], args, umask=0)
+            self.assertEqual((result.returncode, result.stderr), (0, b""))
+            forwarded = os.fsdecode(result.stdout).split("\0")[:-1]
+            self.assertRegex(forwarded[4], r"^\d+$")
+            self.assertEqual(forwarded, [
+                "--ro-bind", "/", "/", "--bind-fd", forwarded[4], "/tmp",
+                "--dev-bind", "/dev", "/dev",
+                "--tmpfs", home, "--dir", home + "/.codex",
+                "--ro-bind-try", packages, packages, "--bind-try", memories, memories,
+                "--ro-bind-try", agents, agents,
+                "--bind", workspace, workspace, "--ro-bind", str(overlay), "/workspace/example",
+                "--bind", "source", "--", "/bin/codex-linux-sandbox", policy,
+            ])
+            self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+            if attempt == 0:
+                marker.write_bytes(b"kept")
+            else:
+                self.assertEqual(marker.read_bytes(), b"kept")
+
+    def test_project_tmp_rejects_symlinked_project_components(self):
+        target = self.root / "other"
+        target.mkdir()
+        cache = self.runtime.home / ".cache/codex/tmp"
+        cache.mkdir(parents=True)
+        (cache / "projects").symlink_to(target)
+        args = codex(helper_options=["--sandbox-policy-cwd=/projects/workspace"])
         result = self.runtime.command([self.launcher], args)
-        self.assertEqual((result.returncode, result.stderr), (0, b""))
-        self.assertEqual(result.stdout, b"".join(os.fsencode(arg) + b"\0" for arg in expected))
+        self.assertEqual((result.returncode, result.stdout), (1, b""))
+        self.assertIn(b"failed to prepare project /tmp", result.stderr)
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_path_search_order_includes_empty_and_relative_entries(self):
         skipped = self.root / "skip"

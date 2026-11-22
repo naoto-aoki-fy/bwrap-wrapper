@@ -7,6 +7,10 @@ from typing import List, Optional
 HELPER = "codex-linux-sandbox"
 POLICY_CWD = "--sandbox-policy-cwd"
 PROTECTED = (".git", ".agents", ".codex", ".aws")
+BIND_OPTIONS = (
+    "--bind", "--bind-try", "--ro-bind", "--ro-bind-try",
+    "--dev-bind", "--dev-bind-try", "--bind-fd", "--ro-bind-fd",
+)
 
 
 @dataclass
@@ -15,6 +19,7 @@ class Output:
     is_codex: bool
     workspace: Optional[str] = None
     home_inserted: bool = False
+    project_tmp_index: Optional[int] = None
 
 
 def _helper_options(options, command):
@@ -109,6 +114,8 @@ def transform(args, home, read_overlays, read_mounts, extra_read_only_dirs=()):
     output = Output([], True, workspace)
     forwarded = output.args
 
+    tmp_index = 0
+    tmp_base_end = 0
     i = 0
     while i < len(args):
         arg = args[i]
@@ -129,22 +136,38 @@ def transform(args, home, read_overlays, read_mounts, extra_read_only_dirs=()):
         elif arg == "--dev" and i + 1 < len(args) and args[i + 1] == "/dev":
             forwarded.extend(("--dev-bind", "/dev", "/dev"))
             i += 2
-        elif arg == "--bind" and i + 2 < len(args):
+        elif ((arg in BIND_OPTIONS and i + 2 < end)
+              or (arg == "--bind" and i + 2 < len(args))):
             # Even a malformed bind consumes both operands, possibly the separator.
             source, target = args[i + 1:i + 3]
-            matching = source == target == workspace
+            matching = arg == "--bind" and source == target == workspace
             if matching and not output.home_inserted:
                 helper = _helper_directory(command[0], home) if helper_options is not None else None
                 forwarded.extend(_home_mounts(home, helper))
                 output.home_inserted = True
-            forwarded.extend((arg, source, target))
+            host_tmp = arg in ("--bind", "--bind-try") and source == target == "/tmp"
+            if workspace is not None and host_tmp:
+                tmp_index = tmp_base_end
+            else:
+                forwarded.extend((arg, source, target))
+                if i + 2 < end and target in ("/", "/tmp"):
+                    tmp_base_end = len(forwarded)
+                    if target == "/":
+                        tmp_index = tmp_base_end
             if matching:
                 for overlay in read_overlays():
                     dest = os.path.join(workspace, os.path.basename(overlay))
                     forwarded.extend(("--ro-bind", overlay, dest))
             i += 3
+        elif arg == "--tmpfs" and i + 1 < end and args[i + 1] == "/":
+            forwarded.extend((arg, "/"))
+            tmp_index = tmp_base_end = len(forwarded)
+            i += 2
         else:
             forwarded.append(arg)
             i += 1
 
+    if workspace is not None:
+        # Mount before /tmp descendants so workspace binds and masks stay visible.
+        output.project_tmp_index = tmp_index
     return output

@@ -1,5 +1,6 @@
 """Discover the real Bubblewrap, optionally log, and replace the process."""
 
+from contextlib import contextmanager, nullcontext
 import os
 import signal
 import stat
@@ -63,6 +64,35 @@ def find_bwrap(launcher):
     raise ValueError("no executable bwrap other than this wrapper found in PATH")
 
 
+@contextmanager
+def _project_tmp_fd(home, workspace):
+    cache = os.path.join(home, ".cache")
+    parts = ("codex", "tmp", *filter(None, workspace.split("/")))
+    flags = os.O_PATH | os.O_DIRECTORY
+    fd = None
+    try:
+        try:
+            os.makedirs(cache, mode=0o700, exist_ok=True)
+            fd = os.open(cache, flags)
+            for part in parts:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                # A parent project's /tmp can contain another project's cache.
+                child = os.open(part, flags | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            os.set_inheritable(fd, True)
+        except OSError as error:
+            path = os.path.join(cache, *parts)
+            raise ValueError(f"failed to prepare project /tmp at {path}: {error}") from error
+        yield fd
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def run(original, launcher, read_mounts=mounts.read_file):
     os.umask(0o077)
     _restore_locale_environment()
@@ -83,18 +113,23 @@ def run(original, launcher, read_mounts=mounts.read_file):
     output = transform.transform(original, home, lambda: config.discover(home, xdg),
                                  read_mounts, settings.extra_read_only_dirs)
     real_bwrap = find_bwrap(launcher)
-    if log is not None:
-        try:
-            log.append(real_bwrap, original, output)
-        except (OSError, UnicodeError) as error:
-            raise ValueError(f"failed to write invocation log: {error}") from error
+    index = output.project_tmp_index
+    project_tmp = _project_tmp_fd(home, output.workspace) if index is not None else nullcontext()
+    with project_tmp as fd:
+        if fd is not None:
+            output.args[index:index] = ("--bind-fd", str(fd), "/tmp")
+        if log is not None:
+            try:
+                log.append(real_bwrap, original, output)
+            except (OSError, UnicodeError) as error:
+                raise ValueError(f"failed to write invocation log: {error}") from error
 
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-    signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
-    try:
-        os.execv(real_bwrap, [real_bwrap, *output.args])
-    except (OSError, ValueError) as error:
-        raise ValueError(f"failed to execute {real_bwrap}: {error}") from error
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+        signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+        try:
+            os.execv(real_bwrap, [real_bwrap, *output.args])
+        except (OSError, ValueError) as error:
+            raise ValueError(f"failed to execute {real_bwrap}: {error}") from error
 
 
 def main(launcher):

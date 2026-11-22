@@ -79,13 +79,23 @@ The wrapper applies the following changes to recognized invocations, preserving
 their original mount sequence around the changes.
 
 1. Replace `--dev /dev` with `--dev-bind /dev /dev`.
-2. Remove complete protections at the exact `.git`, `.agents`, `.codex`, and
+2. Mount the workspace's cache directory writable at `/tmp`. For a workspace
+   `/path/to/project`, the source is `$HOME/.cache/codex/tmp/path/to/project`.
+   The wrapper creates missing directories with mode `0700` and reuses their
+   contents on later invocations. It rejects symlinks in the source path below
+   `$HOME/.cache` and passes the opened directory to Bubblewrap with `--bind-fd`.
+   The mount follows the root filesystem mount and precedes `/tmp` submounts.
+   It replaces exact `--bind /tmp /tmp` and `--bind-try /tmp /tmp` options,
+   taking precedence over any read-only `/tmp` bind that they covered. The
+   cache mount requires a specified workspace and a Bubblewrap version with
+   `--bind-fd` support.
+3. Remove complete protections at the exact `.git`, `.agents`, `.codex`, and
    `.aws` paths directly under the workspace and at the fixed paths directly
    under `/tmp`. A protection is a self `--ro-bind P P` or a pair
    `--tmpfs P --remount-ro P` with an optional adjacent `--perms MODE` prefix.
    Incomplete groups and other mounts are preserved. For example, the Codex
    daemon directory mask remains in place.
-3. Before the first exact `--bind WORKSPACE WORKSPACE`, mount tmpfs on HOME,
+4. Before the first exact `--bind WORKSPACE WORKSPACE`, mount tmpfs on HOME,
    create `HOME/.codex`, and re-expose packages and `AGENTS.md` read-only and
    memories writable. These three mounts use Bubblewrap's `--ro-bind-try` and
    `--bind-try` options to skip missing sources. If a current-format command
@@ -95,13 +105,13 @@ their original mount sequence around the changes.
    only that immediate directory read-only. The helper path is checked
    lexically and can be a symlink into the packages mount. Unrelated helper
    directories and shell snapshots remain hidden in this mount layout.
-4. After every matching workspace bind, re-read
+5. After every matching workspace bind, re-read
    `${XDG_CONFIG_HOME:-$HOME/.config}/bwrap-wrapper/cwd/`. Bind each direct
    regular file read-only over `WORKSPACE/<filename>`, in filename order
    after UTF-8 decoding with surrogateescape. Hidden files and symlinks to
    regular files are included. Missing directories, non-file entries, and
    broken links add no mounts. Other discovery errors abort execution.
-5. At the command separator, read `/proc/mounts` as UTF-8 and mask each WSL2
+6. At the command separator, read `/proc/mounts` as UTF-8 and mask each WSL2
    Windows drive with `--tmpfs MOUNTPOINT`. The filesystem type must be
    exactly `9p` and the comma- or semicolon-delimited options must include
    exactly `aname=drvfs`. Decode three-digit octal escapes and deduplicate.

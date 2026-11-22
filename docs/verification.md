@@ -96,8 +96,10 @@ The comparisons run the installed Python `bwrap` and the Rust `bwrap`.
 The shared fixtures use equivalent JSON and TOML settings and the same fake
 executable. Separate test drivers inject a synthetic mount table. The tests
 compare forwarded bytes, exit or signal outcomes, and complete successful
-logs with only the timestamp and PID normalized. Failure cases check
-diagnostic categories and which log artifacts were created.
+logs with the timestamp and PID normalized. They check the project `/tmp`
+bind in the Python result and compare the remaining arguments and log entries
+against the Rust reference. Failure cases check diagnostic categories and
+which log artifacts were created.
 
 ## Real mount isolation
 
@@ -120,6 +122,7 @@ eight combinations of packages, memories, and `AGENTS.md` present or absent.
 That is 16 cases per format. Fixtures are synthetic, with a read-only root
 mount and writable binds into temporary directories. The checks cover HOME
 hiding, generated helper execution and directory permissions, optional
-sources, workspace writes, overlays, configured extra directories, and
-unrelated read-only mounts. Real WSL2 drive masking and end-to-end Codex
-sessions require target-host checks in addition to this suite.
+sources, workspace writes, overlays, configured extra directories, unrelated
+read-only mounts, and `/tmp` isolation and writes to the project cache. Real
+WSL2 drive masking and end-to-end Codex sessions require target-host checks in
+addition to this suite.

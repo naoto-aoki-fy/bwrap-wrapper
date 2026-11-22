@@ -60,7 +60,7 @@ class DifferentialTests(unittest.TestCase):
         )
 
     def compare(self, args, *, synthetic=False, env=None, status=0, failure=None, logged=False,
-                log_directory=None, expected_stdout=None, input=None):
+                log_directory=None, expected_stdout=None, input=None, project_tmp=False):
         runtime = self.runtime
         env = dict(runtime.env if env is None else env)
         if synthetic:
@@ -74,8 +74,7 @@ class DifferentialTests(unittest.TestCase):
                 runtime.log.parent.rmdir()
             result = runtime.command(launcher, args, env=env, input=input)
             self.assertEqual(result.returncode, status, (launcher, result.stderr))
-            if expected_stdout is not None:
-                self.assertEqual(result.stdout, expected_stdout)
+            stdout = result.stdout
             if failure is None:
                 stderr = result.stderr
             else:
@@ -86,9 +85,18 @@ class DifferentialTests(unittest.TestCase):
                 raw_log = runtime.log.read_bytes()
                 self.assertTrue(raw_log.endswith(b"=========== BWRAP END ===========\n"))
                 log = normalize_log(raw_log)
+            if project_tmp and launcher == self.python_driver:
+                option, fd, target, stdout = stdout.split(b"\0", 3)
+                self.assertEqual((option, target), (b"--bind-fd", b"/tmp"))
+                self.assertRegex(fd, rb"^[0-9]+$")
+                if log is not None:
+                    log = log.replace(b"\nModified args: --bind-fd " + fd + b" /tmp ",
+                                      b"\nModified args: ", 1)
+            if expected_stdout is not None:
+                self.assertEqual(stdout, expected_stdout)
             if log_directory is not None:
                 self.assertEqual(runtime.log.parent.exists(), log_directory)
-            results.append((result.stdout, stderr, log))
+            results.append((stdout, stderr, log))
         for result in results[1:]:
             self.assertEqual(result, results[0])
 
@@ -121,7 +129,7 @@ class DifferentialTests(unittest.TestCase):
         for legacy in (False, True):
             with self.subTest(legacy=legacy):
                 self.compare(codex(options, policy, command, legacy=legacy, helper=helper),
-                             synthetic=True, logged=True)
+                             synthetic=True, logged=True, project_tmp=True)
         self.compare(codex(), synthetic=True, logged=True)
         self.compare(["--argv0", "codex-linux-sandbox", "--bind", "source", "--", "/bin/codex"],
                      synthetic=True, logged=True)
@@ -139,7 +147,7 @@ class DifferentialTests(unittest.TestCase):
         work = os.fsdecode(b"/work\xff")
         options = ["--bind", work, work, "--ro-bind", work + "/.git", work + "/.git"]
         self.compare(codex(options, ["--sandbox-policy-cwd", work], ["--", b"nested\xff"]),
-                     synthetic=True, env=env, log_directory=False)
+                     synthetic=True, env=env, log_directory=False, project_tmp=True)
 
     def test_failures_and_signal_termination(self):
         self.settings(True)

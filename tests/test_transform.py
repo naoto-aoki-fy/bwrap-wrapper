@@ -81,6 +81,7 @@ class TransformTests(unittest.TestCase):
                 result = self.rewrite(args)
                 self.assertTrue(result.is_codex)
                 self.assertEqual(result.workspace, expected)
+                self.assertEqual(result.project_tmp_index, None if expected is None else 0)
         for args in [
             ["--dev", "/dev"],
             ["--", "/bin/" + HELPER + "/"],
@@ -95,10 +96,44 @@ class TransformTests(unittest.TestCase):
                 result = transform(args, HOME, unused, unused, ["/ignored"])
                 self.assertFalse(result.is_codex)
                 self.assertEqual(result.args, args)
+                self.assertIsNone(result.project_tmp_index)
         for value in ("relative", ".", "../work", "--other"):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "must be absolute"):
                     self.rewrite(codex(helper_options=[policy, value]))
+
+    def test_project_tmp_precedes_existing_child_mounts(self):
+        workspace = "/tmp/project"
+        mask = ["--perms", "000", "--tmpfs", "/tmp/daemon", "--remount-ro", "/tmp/daemon"]
+        root = ["--ro-bind", "/", "/"]
+        policy = ["--sandbox-policy-cwd", workspace]
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                args = codex([*root, *mask, "--bind", workspace, workspace,
+                              "--bind", "/tmp", "/tmp", "--bind-try", "/tmp", "/tmp"],
+                             policy, legacy=legacy)
+                result = self.rewrite(args)
+                self.assertEqual(result.project_tmp_index, len(root))
+                self.assertEqual(result.args[:len(root) + len(mask)], root + mask)
+                self.assertEqual(result.args[-(len(policy) + 2):], args[-(len(policy) + 2):])
+                self.assertNotIn("/tmp", result.args)
+                self.assertTrue(result.home_inserted)
+
+    def test_project_tmp_follows_the_root_mount_without_a_host_tmp_bind(self):
+        for root in (["--tmpfs", "/"], ["--bind", "/", "/"]):
+            with self.subTest(root=root):
+                args = codex([*root, "--dir", "/tmp/subdir"], ["--sandbox-policy-cwd=" + WORK])
+                result = self.rewrite(args)
+                self.assertEqual(result.project_tmp_index, len(root))
+                self.assertEqual(result.args, args)
+
+    def test_project_tmp_follows_the_read_only_tmp_bootstrap_mount(self):
+        bootstrap = ["--tmpfs", "/", "--ro-bind", "/tmp", "/tmp"]
+        args = codex([*bootstrap, "--bind", "/tmp", "/tmp"],
+                     ["--sandbox-policy-cwd=" + WORK])
+        result = self.rewrite(args)
+        self.assertEqual(result.project_tmp_index, len(bootstrap))
+        self.assertEqual(result.args, bootstrap + args[len(bootstrap) + 3:])
 
     def test_exact_protection_groups_and_literal_operands(self):
         for base in (WORK, "/tmp"):

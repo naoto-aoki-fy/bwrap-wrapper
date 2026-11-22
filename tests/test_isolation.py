@@ -29,6 +29,10 @@ deny_write() {
 [ ! -e "$HOME/.codex/tmp/arg0-linux/other/hidden" ]
 [ ! -e "$HOME/.codex/shell_snapshots/snapshot.sh" ]
 [ "$(stat -f -c %T "$HOME")" = tmpfs ]
+[ ! -e "$HOST_TMP_FILE" ]
+[ -d "$TMP_MASK" ]
+deny_write "$TMP_MASK/new"
+printf project-tmp > /tmp/persisted
 if [ "$GENERATED" != "" ]; then
     [ -L "$GENERATED/codex-linux-sandbox" ]
     deny_write "$GENERATED/new"
@@ -105,6 +109,8 @@ class IsolationTests(unittest.TestCase):
             extra = root / "extra"
             git = workspace / ".git"
             overlay = home / ".config/bwrap-wrapper/cwd/overlay"
+            host_tmp_file = root / "host-tmp"
+            tmp_mask = root / "daemon"
             files = {
                 home / "private": "private",
                 dot_codex / "tmp/unrelated": "secret",
@@ -115,6 +121,7 @@ class IsolationTests(unittest.TestCase):
                 overlay: "overlay",
                 other / "data": "other",
                 extra / "data": "exposed",
+                host_tmp_file: "host tmp",
                 overlay.parent.parent / "config.json": json.dumps({
                     "codex": {"extra_read_only_dirs": [str(extra)]},
                 }),
@@ -145,9 +152,14 @@ class IsolationTests(unittest.TestCase):
             (real_dir / "bwrap").symlink_to(real)
             args = [
                 "--ro-bind", "/", "/", "--dev", "/dev",
+                "--perms", "000", "--tmpfs", tmp_mask, "--remount-ro", tmp_mask,
                 "--ro-bind", other, other, "--tmpfs", extra,
                 "--bind", workspace, workspace, "--ro-bind", git, git,
             ]
+            if nested:
+                args.extend(("--bind", "/tmp", "/tmp"))
+            if not generated:
+                args.extend(("--ro-bind", helper, helper))
             if legacy:
                 args.extend(("--argv0", "codex-linux-sandbox"))
             args.extend(("--", helper, "--sandbox-policy-cwd", workspace,
@@ -156,6 +168,7 @@ class IsolationTests(unittest.TestCase):
                 "PATH": f"{self.launcher.parent}:{real_dir}:/usr/bin:/bin",
                 "HOME": str(home), "WORKSPACE": str(workspace), "OTHER": str(other),
                 "EXTRA": str(extra), "GENERATED": generated, "LC_ALL": "C",
+                "HOST_TMP_FILE": str(host_tmp_file), "TMP_MASK": str(tmp_mask),
                 "PACKAGES": str(present & 1), "MEMORIES": str((present >> 1) & 1),
                 "AGENTS": str((present >> 2) & 1),
             }
@@ -163,6 +176,8 @@ class IsolationTests(unittest.TestCase):
                                     cwd=root, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
             self.assertEqual(result.stdout, b"isolation-ok\n")
+            cache = home / ".cache/codex/tmp" / str(workspace).lstrip("/")
+            self.assertEqual((cache / "persisted").read_bytes(), b"project-tmp")
             self.assertEqual((workspace / "new").read_bytes(), b"workspace")
             self.assertEqual((git / "config").read_bytes(), b"updated")
             self.assertEqual((workspace / "overlay").read_bytes(), b"original")
