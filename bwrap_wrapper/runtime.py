@@ -11,6 +11,7 @@ from .invocation_log import InvocationLog
 
 NATIVE_LAUNCHER_MARKER = b"\0bwrap-wrapper native launcher\0"
 LEGACY_LAUNCHER_MARKER = b"# bwrap-wrapper Python launcher\n"
+SCRIPT_SCAN_LIMIT = 32 * 1024
 
 
 def _restore_locale_environment():
@@ -33,10 +34,16 @@ def _is_wrapper_launcher(path):
     try:
         # A candidate can be replaced after stat. Avoid blocking if it becomes a FIFO.
         with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as candidate:
-            header = candidate.readline(256)
+            header = candidate.read(4)
             if header.startswith(b"#!"):
-                return candidate.read(len(LEGACY_LAUNCHER_MARKER)) == LEGACY_LAUNCHER_MARKER
-            if header.startswith(b"\x7fELF"):
+                script = header + candidate.read(SCRIPT_SCAN_LIMIT - len(header))
+                if script.partition(b"\n")[2].startswith(LEGACY_LAUNCHER_MARKER):
+                    return True
+                # uv and pip use the same import and call, even with a shell prefix.
+                lines = {line.strip() for line in script.splitlines()}
+                return (b"from bwrap_wrapper.runtime import main" in lines
+                        and b"sys.exit(main())" in lines)
+            if header == b"\x7fELF":
                 candidate.seek(-len(NATIVE_LAUNCHER_MARKER), os.SEEK_END)
                 return candidate.read(len(NATIVE_LAUNCHER_MARKER)) == NATIVE_LAUNCHER_MARKER
     except OSError:
@@ -132,9 +139,9 @@ def run(original, launcher, read_mounts=mounts.read_file):
             raise ValueError(f"failed to execute {real_bwrap}: {error}") from error
 
 
-def main(launcher):
+def main():
     try:
-        run(sys.argv[1:], launcher)
+        run(sys.argv[1:], sys.argv[0])
     except (OSError, ValueError) as error:
         print(f"bwrap-wrapper: {error}", file=sys.stderr)
         raise SystemExit(1) from None

@@ -15,12 +15,13 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 
+[project.scripts]
+bwrap = "bwrap_wrapper.runtime:main"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "/bwrap_wrapper",
     "/docs",
-    "/hatch_build.py",
-    "/launcher.c",
     "/pyproject.toml",
     "/README.md",
     "/LICENSE",
@@ -29,5 +30,3 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["bwrap_wrapper"]
-
-[tool.hatch.build.targets.wheel.hooks.custom]

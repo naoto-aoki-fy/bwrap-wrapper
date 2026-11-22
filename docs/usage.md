@@ -1,12 +1,13 @@
 # Installation and usage
 
 The wrapper requires Linux or WSL2, CPython 3.9 or newer, and a working
-Bubblewrap. Use `uv` to install it. Source builds require `cc` or the C
-compiler named by `CC`.
+Bubblewrap. The package is pure Python and builds without a C compiler.
 
 ## Installation
 
-Run these commands from the project root.
+Run either installation procedure from the project root.
+
+### uv
 
 ```sh
 uv tool install .
@@ -14,17 +15,36 @@ export PATH="$(uv tool dir --bin):$PATH"
 command -v bwrap
 ```
 
-`command -v bwrap` should show `bwrap` in the uv tool bin directory. Keep
-the real Bubblewrap later in `PATH`, such as `/usr/bin/bwrap`. You can then
-run `bwrap` from any working directory. Pass `--python 3.14` to `uv tool install`
-to select a specific CPython version. [uv tool installation](https://docs.astral.sh/uv/guides/tools/#installing-tools)
+`command -v bwrap` should show `bwrap` in the uv tool bin directory.
+Pass `--python 3.14` to `uv tool install` to select a specific CPython
+version. [uv tool installation](https://docs.astral.sh/uv/guides/tools/#installing-tools)
 
-The launcher starts Python from the tool environment in isolated mode with
-site initialization disabled and UTF-8 filesystem decoding. The wrapper
-picks the first executable regular file named `bwrap` on `PATH` after skipping
-links to itself and marked wrapper installations, including previous releases.
-Relative and empty entries are resolved from the working directory. An unset
-`PATH` or a search with no suitable candidate causes an error.
+### pip
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+command -v bwrap
+```
+
+`command -v bwrap` should show `bwrap` in the active virtual environment's
+`bin` directory. Use a versioned interpreter such as `python3.14` to create
+the environment with that CPython version.
+
+### Running bwrap
+
+Keep the real Bubblewrap, such as `/usr/bin/bwrap`, later in `PATH`. You can
+run `bwrap` from any working directory. Both installers generate a standard
+Python command that uses the interpreter from its virtual environment.
+Python handles `PYTHONHOME`, `PYTHONPATH`, and site initialization as it
+does for other commands installed in a virtual environment.
+
+The wrapper picks the first executable regular file named `bwrap` on
+`PATH` after skipping links to itself, uv and pip entry-point scripts for
+this package, and marked launchers from previous releases. Relative and empty
+entries are resolved from the working directory. An unset `PATH` or a search
+with no suitable candidate causes an error.
 
 ## Settings
 

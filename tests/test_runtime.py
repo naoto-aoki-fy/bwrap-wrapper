@@ -15,8 +15,8 @@ class RuntimeTests(unittest.TestCase):
     def setUpClass(cls):
         temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(temp.cleanup)
-        cls.launcher = install_wrapper(Path(temp.name) / "tool with spaces")
-        cls.other_launcher = install_wrapper(Path(temp.name) / "other")
+        cls.launcher = install_wrapper(Path(temp.name) / "tool")
+        cls.other_launcher = install_wrapper(Path(temp.name) / "tool with spaces")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -28,18 +28,21 @@ class RuntimeTests(unittest.TestCase):
         symlink = self.root / "symlink/bwrap"
         hardlink = self.root / "hardlink/bwrap"
         legacy = self.root / "legacy/bwrap"
-        for path in (symlink, hardlink, legacy):
+        native = self.root / "native/bwrap"
+        for path in (symlink, hardlink, legacy, native):
             path.parent.mkdir()
         symlink.symlink_to(self.launcher)
         os.link(self.launcher.resolve(), hardlink)
         executable(legacy, "#!/bin/sh\n# bwrap-wrapper Python launcher\nexit 99\n")
+        native.write_bytes(b"\x7fELF" + bytes(32 * 1024) + b"\0bwrap-wrapper native launcher\0")
+        native.chmod(0o755)
         self.assertFalse(os.path.samefile(self.launcher, self.other_launcher))
 
         env = dict(self.runtime.env, PATH=os.pathsep.join(map(str, (
-            symlink.parent, hardlink.parent, self.other_launcher.parent, legacy.parent,
+            symlink.parent, hardlink.parent, self.other_launcher.parent, legacy.parent, native.parent,
             self.launcher.parent, self.runtime.real,
         ))))
-        for command in ("bwrap", self.launcher, self.launcher.resolve()):
+        for command in ("bwrap", hardlink, self.launcher, self.launcher.resolve(), self.other_launcher):
             with self.subTest(command=command):
                 result = self.runtime.command([command], ["--version"], env=env)
                 self.assertEqual((result.returncode, result.stdout, result.stderr),
@@ -123,16 +126,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 1)
         self.assertIn(b"no executable bwrap", missing.stderr)
 
-    def test_launcher_isolates_imports_and_forwards_pid_streams_environment_and_status(self):
+    def test_launcher_uses_standard_python_startup(self):
         runtime = self.runtime
-        poison = self.root / "poison"
-        poison.mkdir()
-        (poison / "sitecustomize.py").write_text("raise SystemExit(42)", encoding="utf-8")
-        (poison / "bwrap_wrapper.py").write_text("raise SystemExit(43)", encoding="utf-8")
+        imports = self.root / "site imports"
+        imports.mkdir()
+        (imports / "sitecustomize.py").write_text(
+            'import os\nos.environ["SITE_CUSTOMIZED"] = "1"\n', encoding="utf-8")
+        env_file = self.root / "env"
+        env = dict(runtime.env, PYTHONPATH=str(imports), FAKE_ENV=str(env_file))
+        result = runtime.command([self.other_launcher], ["two words", ""], env=env)
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (0, b"two words\0\0", b""))
+        self.assertIn(b"SITE_CUSTOMIZED=1\0", env_file.read_bytes())
+
+        env_file.unlink()
+        result = runtime.command([self.other_launcher], env=dict(env, PYTHONHOME=str(imports)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(env_file.exists())
+
+    def test_launcher_forwards_pid_streams_environment_and_status(self):
+        runtime = self.runtime
         pid_file = self.root / "pid"
         env_file = self.root / "env"
-        env = dict(runtime.env, PYTHONPATH=str(poison), PYTHONHOME=str(poison), PYTHONUTF8="0",
-                   PYTHONCOERCECLOCALE="warn", LANG="C", FAKE_PID_FILE=str(pid_file),
+        env = dict(runtime.env, PYTHONUTF8="0", LANG="C", FAKE_PID_FILE=str(pid_file),
                    FAKE_ENV=str(env_file), FAKE_EXIT="23", FAKE_STREAMS="1")
         for lc_ctype in (None, "C", "POSIX", "", "C.UTF-8", "en_US.UTF-8"):
             with self.subTest(lc_ctype=lc_ctype):
@@ -140,7 +156,7 @@ class RuntimeTests(unittest.TestCase):
                 if lc_ctype is not None:
                     child_env["LC_CTYPE"] = lc_ctype
                 with subprocess.Popen(
-                    [self.launcher, "two words", "", "a'b", "é"], env=child_env, cwd=poison,
+                    [self.launcher, "two words", "", "a'b", "é"], env=child_env, cwd=self.root,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 ) as process:
                     stdout, stderr = process.communicate(b"from stdin\n", timeout=15)

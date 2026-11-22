@@ -55,8 +55,11 @@ with `--python 3.14` to check the other interpreter.
 ```
 
 `uv build` creates a source distribution and builds the wheel from it. The
-wheel contains the native launcher for the build platform. Installation
-from a compatible wheel requires no compiler. [Hatchling wheel builder](https://hatch.pypa.io/dev/plugins/builder/wheel/)
+wheel has the `py3-none-any` tag. To also verify the wheel with pip, run
+`python -m pip install /absolute/path/to/bwrap_wrapper-0.1.0-py3-none-any.whl`
+in a separate virtual environment with pip available. Change to a directory
+outside the checkout and repeat the smoke test with that environment's
+`bwrap`. [Hatchling wheel builder](https://hatch.pypa.io/dev/plugins/builder/wheel/)
 
 ## Ordinary tests
 
